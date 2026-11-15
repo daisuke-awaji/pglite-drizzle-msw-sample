@@ -1,0 +1,105 @@
+name: Deploy (environment)
+
+# 1 つの環境へのデプロイ（deploy.yml から呼ぶ）。順番に意味があり、入れ替えない（docs/production.md「いつものリリース」）:
+#   zip を置く → migrate 関数を更新 → 事前の SQL → マイグレーション → API の revision（next で確かめて live を切り替え）
+#   → 画面をビルドして置く → CloudFront 経由のスモークテスト
+# GitHub Environments（development / staging / production）の変数:
+#   AWS_ACCOUNT_ID、AWS_DEPLOY_ROLE_ARN（infra の Ci スタックが作るロール）。production には承認者を設定する
+on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+      github-environment:
+        type: string
+        required: true
+      sha:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.github-environment }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ENV: ${{ inputs.environment }}
+      SHA: ${{ inputs.sha }}
+      AWS_REGION: ap-northeast-1
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            infra/package-lock.json
+      - run: npm ci
+      - run: npm ci
+        working-directory: infra
+      - uses: actions/download-artifact@v7
+        with:
+          name: dist-server
+          path: dist-server
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-northeast-1
+          role-session-name: deploy-${{ inputs.environment }}-${{ github.run_id }}
+
+      - name: zip を置く（キーはコミット SHA。上書きしない）
+        working-directory: infra
+        run: node scripts/deploy/upload.ts "$ENV" "$SHA" ../dist-server
+      - name: migrate 関数を新しい zip にする（API とは別のスタック。API はまだ古いまま）
+        working-directory: infra
+        env:
+          ACCOUNT: ${{ vars.AWS_ACCOUNT_ID }}
+        run: |
+          app=$(jq -r '.context.app // "tasks"' cdk.json)
+          npx cdk deploy "$app-$ENV-Migrate" -c env="$ENV" -c buildSha="$SHA" -c "account.$ENV=$ACCOUNT" --exclusively --require-approval never
+      - name: 事前の SQL（CREATE INDEX CONCURRENTLY など）
+        working-directory: infra
+        run: node scripts/deploy/migrate.ts "$ENV" pre
+      - name: マイグレーション（失敗したらここで止まる。API も画面も古いまま）
+        working-directory: infra
+        run: node scripts/deploy/migrate.ts "$ENV" migrate
+      - name: API（revision を作り、next で確かめてから live を切り替える。prod はカナリア）
+        working-directory: infra
+        run: node scripts/deploy/release.ts "$ENV" "$SHA"
+
+      - name: 画面をビルドする（本番の API・認証・RUM の設定で）
+        run: |
+          node infra/scripts/deploy/web-env.ts "$ENV" "$SHA" >> "$GITHUB_ENV"
+          npm run check:no-mock-build
+      - run: npm run build
+      - name: 画面を置く（JS・CSS → index.html の順。古い JS は消さない）
+        working-directory: infra
+        run: node scripts/deploy/publish-web.ts "$ENV" ../dist
+      - uses: actions/upload-artifact@v7
+        with:
+          # 画面を戻すときは、このビルドの index.html を置き直す（docs/production.md「戻すとき」）
+          name: web-${{ inputs.environment }}-${{ inputs.sha }}
+          path: dist/
+          retention-days: 30
+      - name: CloudFront 経由のスモークテスト（画面・SPA の書き換え・API・POST）
+        working-directory: infra
+        run: |
+          app=$(jq -r '.context.app // "tasks"' cdk.json)
+          site=$(aws ssm get-parameter --name "/$app/$ENV/web/site-domain" --query Parameter.Value --output text)
+          node scripts/deploy/smoke.ts "https://$site" --site --auth "${VITE_AUTH_MODE:-none}" --build "$SHA"
+      - name: 失敗したとき（何が変わったか）
+        if: failure()
+        run: |
+          {
+            echo "### デプロイが失敗しました（$ENV / $SHA）"
+            echo "手順書: docs/production.md の「デプロイが失敗した」。live を切り替えたあとなら: cd infra && node scripts/deploy/rollback.ts $ENV"
+          } >> "$GITHUB_STEP_SUMMARY"
