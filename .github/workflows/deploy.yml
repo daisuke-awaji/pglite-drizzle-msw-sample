@@ -68,6 +68,10 @@ jobs:
   dev:
     needs: [gate, build]
     if: github.event_name == 'workflow_dispatch' && inputs.environment == 'dev'
+    # 呼び出す側で許していない権限は、呼ばれる側（deploy-env.yml）でも使えない（OIDC で AWS のロールを引き受けるのに要る）
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/deploy-env.yml
     with:
       environment: dev
@@ -77,6 +81,10 @@ jobs:
   stg:
     needs: [gate, build]
     if: github.event_name == 'workflow_run' || inputs.environment == 'stg'
+    # 呼び出す側で許していない権限は、呼ばれる側（deploy-env.yml）でも使えない（OIDC で AWS のロールを引き受けるのに要る）
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/deploy-env.yml
     with:
       environment: stg
@@ -87,6 +95,10 @@ jobs:
     needs: [gate, build, stg]
     # main からの流れでは stg が通ったときだけ。手で prod を選んだときは stg を飛ばす（同じ SHA を stg で確かめてあること）
     if: always() && needs.build.result == 'success' && ((github.event_name == 'workflow_run' && needs.stg.result == 'success') || inputs.environment == 'prod')
+    # 呼び出す側で許していない権限は、呼ばれる側（deploy-env.yml）でも使えない（OIDC で AWS のロールを引き受けるのに要る）
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/deploy-env.yml
     with:
       environment: prod
