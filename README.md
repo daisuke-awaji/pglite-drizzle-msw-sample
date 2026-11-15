@@ -44,6 +44,7 @@ npm run build             # dist/ に出力（404.html も作る）
 | `npm run test:unit` / `test:integration` | 層ごとに実行 |
 | `npm run test:coverage` | カバレッジ付きで全部。`coverage/index.html` に結果 |
 | `npm run lint` / `typecheck` | 警告も失敗として扱う |
+| `npm run check:migrations` | マイグレーションの検査（適用済みのものを書き換えていないか・順番・危ない ALTER）。[後述](#マイグレーションalterの決まり) |
 
 初回は PGlite の WASM とデータ（gzip 後でおよそ 5MB）を読み込むので数秒かかります。
 データはブラウザごとに IndexedDB へ保存され、初回起動時にサンプルデータが入ります。設定画面から初期化できます。
@@ -69,6 +70,7 @@ flowchart LR
 
 画面は `fetch('/api/...')` しか知りません。`src/server` は HTTP にも PGlite にも依存せず、Drizzle の `db` を受け取るだけなので、
 本番では MSW の代わりにサーバーへ同じルート表を登録すれば移行できます（[後述](#本番の-postgresql-に移行する)）。
+AWS での本番の構成・デプロイ・運用の計画は [本番環境（AWS）](#本番環境aws) にあります。
 
 ## データの持ち方
 
@@ -281,8 +283,71 @@ MSW・PGlite・開発用の機能（設定画面の「API の遅延」「障害�
 ### スキーマを変える
 
 1. `src/db/schema.ts` を編集する
-2. `npm run db:generate -- --name <変更内容>` で `drizzle/` に SQL が増える
-3. リロードすると、ブラウザ内の DB に未適用のマイグレーションだけが流れる（データは残る）
+2. `npm run db:generate -- --name <変更内容>` で `drizzle/` に SQL が増える。**生成された SQL は必ず読む**
+3. `npm run check:migrations` を通す（警告が出たら [ALTER の書き方](docs/production.md#alter-の書き方) に従って書き直すか、PR で理由を書く）
+4. リロードすると、ブラウザ内の DB に未適用のマイグレーションだけが流れる（データは残る）
+
+`main` に入ったマイグレーションは書き換えません（本番やデモの利用者の DB にはもう流れているため）。決まりは [後述](#マイグレーションalterの決まり) です。
+
+## 本番環境（AWS）
+
+![本番構成（AWS）](docs/architecture/aws-production.png)
+
+本番に載せるときの構成と手順の**計画**です（AWS 側はまだ作っていません）。設計の判断、環境ごとの設定、手順書を含めた全体は
+[docs/production.md](docs/production.md)、図の元は [docs/architecture/aws-production.drawio](docs/architecture/aws-production.drawio) です。
+
+| 帯 | 構成 | ポイント |
+|---|---|---|
+| Edge & Auth | Route 53 → CloudFront（AWS WAF）→ `/*` は S3、`/api/*` は ALB | 画面と API を同じドメインで配るので、CORS もビルドの設定もいらない（API の向き先は既定で `/api`）。ログイン（Cognito）は Phase 4 |
+| Compute | CloudFront の VPC オリジン → 内部 ALB → ECS on Fargate（2 AZ） | `src/server/routes.ts` を Hono に登録したサーバー。ALB はインターネットに出さない。NAT Gateway は置かず VPC endpoints で出る |
+| Data & Storage | Aurora PostgreSQL 18 Serverless v2（Writer + 別 AZ の Reader）、Secrets Manager、KMS、AWS Backup | ブラウザの PGlite（PostgreSQL 18.6）と同じメジャーバージョン。DB の利用者はアプリ用（読み書きだけ）とマイグレーション用に分ける |
+
+`src/server` はそのまま使えます。本物の PostgreSQL 18.6 に node-postgres でつなぎ、結合テスト 78 件が通ることを確かめてあります。
+
+> 今の API には認証がありません。認証（Phase 4）が入るまでは、本番のデータを載せて公開せず、WAF で社内の IP だけを通すなど入口で絞ってください。
+
+### デプロイの流れ
+
+`main` に入ると stg へ自動で、GitHub Environments で承認すると prod へ、同じ手順で入ります（GitHub Actions から OIDC で AWS に入る）。順番は入れ替えません。
+
+1. イメージを ECR に push（タグはコミット SHA）し、画面を `VITE_USE_MOCK=false` でビルドする
+2. migrate のタスク定義だけを新しいイメージにする（`cdk deploy <env>-Migrate`）
+3. **マイグレーションを RunTask で 1 回だけ流す。** 失敗したらここで止まり、API も画面も古いまま
+4. API をローリング更新する（失敗やアラームで ECS が前のバージョンに戻す）
+5. 画面の JS・CSS を置いてから `index.html` を置き、`index.html` のキャッシュだけを消す（古い JS は消さない）
+6. スモークテスト（`/api/readyz` と、データを変えない主な画面）
+
+戻すときは、API と画面は前のコミット SHA で出し直します。DB のスキーマは戻さず、直すマイグレーションを足して前に進めます。
+
+### マイグレーション（ALTER）の決まり
+
+Drizzle の migrator は、未適用のマイグレーションを 1 つのトランザクションで流し、適用済みかを `when`（生成した時刻）だけで決めます。
+この性質と、ALTER のロックの振る舞いを PostgreSQL 18.6 で確かめた結果から、次の決まりにしています（詳しくは [docs/production.md#マイグレーション](docs/production.md#マイグレーション)）。
+
+- **流すのはデプロイの中で 1 回だけ、API より先。** 実行役は advisory lock で同時に流さず、`lock_timeout` でロック待ちのまま普通の SELECT まで止めることを防ぎ、あきらめたら待ってやり直す。
+- **1 つ前の API と、開いたままの画面が動くこと。** 列を消す・名前を変える・型を変えるは、1 回のリリースでしない。「足す → 移す → 切り替える → 消す」とリリースをまたぐ。
+- **`main` に入ったものは書き換えない。** 書き換えても適用済みの DB には反映されない（Drizzle は hash を照合しない）。間違いは直すマイグレーションを足す。
+- **ほかのブランチのマイグレーションが先に `main` に入ったら、自分のものを作り直す。** `when` が古いままマージすると、本番では**エラーにならずに飛ばされる**（再現して確かめた）。
+- **ロックが長くなる ALTER は書き方を変える。**
+
+| やりたいこと | そのまま書くと | 安全な書き方 |
+|---|---|---|
+| 行ごとに違う DEFAULT の列を足す・列の型を変える | 表全体を書き直し、その間は読み書きが止まる | NULL 可の新しい列を足し、バッチで埋めてから切り替える |
+| NOT NULL にする | 全行を読む間止まる | `CHECK ... NOT VALID` → `VALIDATE` → `SET NOT NULL` |
+| 既存の表に索引を足す | 作り終わるまで書き込みが止まる | 事前の SQL で `CREATE INDEX CONCURRENTLY`、マイグレーションは `IF NOT EXISTS` |
+| 外部キー・CHECK を足す | 全行を確かめる間ロックを持つ | `NOT VALID` で足し、`VALIDATE CONSTRAINT` を分ける |
+| enum に値を足す | 同じデプロイの後続で使うと失敗する | 足すデプロイと使うデプロイを分ける |
+
+`npm run check:migrations`（CI でも実行）は、次を見つけたら**失敗**にします: `when` の順番の逆転、`main` にあるマイグレーションの書き換え・削除、
+journal に載っていない SQL、`CONCURRENTLY`。上の表の書き方は**警告**にし、レビューで判断します。`drizzle-kit check` も一緒に流します
+（スナップショットの衝突は見つけるが、`when` の順番だけが崩れたときは警告だけで成功するため、両方を流す）。
+
+### 運用
+
+- **監視**: CloudFront・ALB の 5xx と応答時間、正常なタスクの数、Aurora の ACU・接続数・デッドロック、画面の JS エラー（CloudWatch RUM）、費用。アラームは Slack に送る。
+- **バックアップ**: Aurora の PITR（35 日）と AWS Backup（月 1 回を 1 年）。目標は RPO 5 分・RTO 2 時間（案）。3 か月に 1 回、stg で復元を練習する。
+- **手順書**: デプロイ・マイグレーションの失敗、DB のフェイルオーバー、誤って消したデータの復元、DB に直接入るとき、秘密情報のローテーション、メジャーバージョンアップ（[docs/production.md#手順書ランブック](docs/production.md#手順書ランブック)）。
+- **進め方**: Phase 0（この計画とマイグレーションの検査。済み）→ 1 サーバー（`server/`・Dockerfile・本物の PostgreSQL での CI）→ 2 基盤（CDK）→ 3 デプロイ → 4 認証 → 5 本番の開始。
 
 ## ディレクトリ
 
@@ -299,7 +364,9 @@ src/
   db/           Drizzle のスキーマと、ブラウザ用の PGlite 起動・マイグレーター
   test/         テストの道具（DB の複製、本物の API、画面の描画、コンソールの監視）
 e2e/            Playwright の e2e（fixtures.ts に共通の確認）
-drizzle/        drizzle-kit が生成したマイグレーション SQL
+drizzle/        drizzle-kit が生成したマイグレーション SQL（main に入ったものは書き換えない）
+scripts/        ビルドとマイグレーションの検査（check-no-mock-build.mjs、check-migrations.mjs）
+docs/           スクリーンショット、本番の計画（production.md）、構成図（architecture/）
 ```
 
 ## 注意

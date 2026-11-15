@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build && node -e \"require('fs').copyFileSync('dist/index.html','dist/404.html')\"",
     "preview": "vite preview",
     "check:no-mock-build": "node scripts/check-no-mock-build.mjs",
+    "check:migrations": "drizzle-kit check && node scripts/check-migrations.mjs",
     "lint": "oxlint --deny-warnings",
     "typecheck": "tsc -b",
     "test": "vitest run",

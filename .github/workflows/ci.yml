@@ -27,6 +27,17 @@ jobs:
       - run: npm run typecheck
       - name: 本番向け（VITE_USE_MOCK=false）のビルドに開発用の機能が残っていないか
         run: npm run check:no-mock-build
+      # 適用済みのマイグレーションを書き換えていないか、when の順番、危ない ALTER（docs/production.md）。
+      # 基準は、ブランチなら main、main への push なら push 前のコミット
+      - name: マイグレーションを確かめる
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          base=main
+          if [ "$GITHUB_REF" = refs/heads/main ] && [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ]; then base="$BEFORE"; fi
+          git fetch --no-tags --depth=1 origin "$base"
+          npx drizzle-kit check
+          node scripts/check-migrations.mjs FETCH_HEAD
       - run: npm run test:coverage
       - name: カバレッジのレポートを残す
         if: always()
