@@ -28,6 +28,7 @@ export type DrillOptions = {
   waitSeconds?: number
 }
 
+const minutes = (ms: number) => Math.round(ms / 6000) / 10
 const stamp = (d: Date) => d.toISOString().replace(/[-:T]/g, '').slice(0, 12)
 
 export async function restoreDrill({ clients, rds, ctx, restoreTime, keep = false, now = () => new Date(), waitSeconds = 3 * 60 * 60 }: DrillOptions) {
@@ -70,7 +71,6 @@ export async function restoreDrill({ clients, rds, ctx, restoreTime, keep = fals
 
     const { 'migrate/function-name': fn } = await getParams(clients.ssm, ctx, ['migrate/function-name'])
     const verify = await invokeJson(clients, fn!, { mode: 'verify', host })
-    const minutes = (ms: number) => Math.round(ms / 6000) / 10
     Object.assign(result, {
       ok: true,
       restoredTo: restoreTime?.toISOString() ?? 'latest',
