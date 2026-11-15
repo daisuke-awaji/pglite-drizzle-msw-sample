@@ -129,9 +129,13 @@ function Breadcrumbs({ crumbs }: { crumbs: CrumbEntry[] }) {
           {crumbs.map((c, i) => (
             <li key={c.key}>
               {i < crumbs.length - 1 && c.to ? (
-                <Link to={c.to}>{c.label}</Link>
+                <Link to={c.to} title={c.label}>
+                  {c.label}
+                </Link>
               ) : (
-                <span aria-current={i === crumbs.length - 1 ? 'page' : undefined}>{c.label}</span>
+                <span aria-current={i === crumbs.length - 1 ? 'page' : undefined} title={c.label}>
+                  {c.label}
+                </span>
               )}
             </li>
           ))}
@@ -142,7 +146,7 @@ function Breadcrumbs({ crumbs }: { crumbs: CrumbEntry[] }) {
         <Link to={parent.to} className="back-link">
           <ChevronLeftIcon aria-hidden="true" />
           <span className="sr-only">戻る: </span>
-          {parent.label}
+          <span className="truncate">{parent.label}</span>
         </Link>
       )}
     </>
@@ -164,7 +168,7 @@ function MainNav({ collapsed = false, onNavigate }: { collapsed?: boolean; onNav
           ))}
         </ul>
       </nav>
-      <SidebarProjects collapsed={collapsed} onNavigate={onNavigate} />
+      <SidebarProjects onNavigate={onNavigate} />
     </>
   )
 }
@@ -272,7 +276,8 @@ function Shell({ children }: { children: ReactNode }) {
   )
 }
 
-function SidebarProjects({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?: () => void }) {
+// 名前は長いと省略されるので、たたんでいないときも title で全体を出す
+function SidebarProjects({ onNavigate }: { onNavigate?: () => void }) {
   const { projects } = useLoaderData<RootData>()
   if (projects.length === 0) return null
   return (
@@ -283,7 +288,7 @@ function SidebarProjects({ collapsed, onNavigate }: { collapsed: boolean; onNavi
       <ul className="nav-list">
         {projects.map((p) => (
           <li key={p.id}>
-            <NavLink to={`/projects/${p.id}`} className="nav-link" title={collapsed ? p.name : undefined} onClick={onNavigate}>
+            <NavLink to={`/projects/${p.id}`} className="nav-link" title={p.name} onClick={onNavigate}>
               <ColorDot color={p.color} />
               <span className="label">{p.name}</span>
             </NavLink>

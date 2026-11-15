@@ -348,14 +348,18 @@ function TaskRow({ task }: { task: TaskListItem }) {
         </Checkbox>
       </td>
       <td className="col-title cell-primary">
-        <Link to={`/tasks/${task.id}`}>{task.title}</Link>
-        {task.commentCount > 0 && (
-          <span className="comment-count muted" title={`コメント ${task.commentCount} 件`}>
-            <MessageSquareIcon aria-hidden="true" />
-            <span className="tabular">{task.commentCount}</span>
-            <span className="sr-only">件のコメント</span>
-          </span>
-        )}
+        <div className="title-cell">
+          <Link to={`/tasks/${task.id}`} className="clamp-2">
+            {task.title}
+          </Link>
+          {task.commentCount > 0 && (
+            <span className="comment-count muted" title={`コメント ${task.commentCount} 件`}>
+              <MessageSquareIcon aria-hidden="true" />
+              <span className="tabular">{task.commentCount}</span>
+              <span className="sr-only">件のコメント</span>
+            </span>
+          )}
+        </div>
       </td>
       <td data-label="ステータス">
         <StatusLabel status={status} />
@@ -383,7 +387,7 @@ function Tags({ tags }: { tags: TaskListItem['tags'] }) {
   return (
     <ul className="tags" aria-label="タグ">
       {tags.map((t) => (
-        <li key={t.id} className="tag">
+        <li key={t.id} className="tag" title={t.name}>
           {t.name}
         </li>
       ))}
@@ -476,7 +480,9 @@ function BoardCard({ task }: { task: TaskListItem }) {
   return (
     <li ref={rowRef} className="board-card" data-moving={status !== task.status ? '' : undefined}>
       <div className="board-card-head">
-        <Link to={`/tasks/${task.id}`}>{task.title}</Link>
+        <Link to={`/tasks/${task.id}`} className="clamp-3">
+          {task.title}
+        </Link>
         <TaskMenu task={task} status={status} update={update} remove={remove} />
       </div>
       <Tags tags={task.tags} />

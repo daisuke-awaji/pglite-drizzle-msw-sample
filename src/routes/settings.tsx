@@ -171,7 +171,9 @@ function TagRow({ tag }: { tag: { id: number; name: string; taskCount: number } 
   if (fetcher.state !== 'idle') return null
   return (
     <li ref={rowRef}>
-      <span className="tag">{tag.name}</span>
+      <span className="tag" title={tag.name}>
+        {tag.name}
+      </span>
       <span className="muted small tabular">{tag.taskCount} 件</span>
       <Button
         data-variant="ghost"

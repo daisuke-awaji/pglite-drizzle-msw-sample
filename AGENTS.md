@@ -11,6 +11,7 @@
   生成された SQL を読み、`npm run check:migrations` を通す。`main` に入ったマイグレーションは書き換えない（直すときは新しいマイグレーションを足す）。
   列の削除・名前や型の変更は 1 回のリリースでしない（「足す → 移す → 切り替える → 消す」。`docs/production.md` の「マイグレーション」）。
 - 表には `table-stack` クラスと各セルの `data-label` を付ける（スマートフォンでカードになる）。アイコンだけのボタンには `aria-label` を付ける。
+- 名前・タイトルなど利用者が入れる文字は、入力できる最大の長さでも崩れないようにする。全体を読む画面（見出し・説明・コメント）は折り返し、一覧・カードは `clamp-2` / `clamp-3`、1 行に収める所（パンくず・担当者・タグ）は `truncate` にして `title` で全体を出す。flex・grid の子が中身で広がらないよう `min-width: 0` か `minmax(0, 1fr)` を付ける。画面を足したら `e2e/long-text.spec.ts` にも足す。
 - テスト: DB を使うものは `*.integration.test.ts(x)`、それ以外は `*.test.ts(x)`、ブラウザでしか分からないことは `e2e/`。
   エンドポイントを足したら `src/api/api.integration.test.ts` に、画面を足したら `src/routes/app.integration.test.tsx` と `e2e/pages.spec.ts` にケースを足す。
   テスト中の console.error / warn は失敗になる。わざと出すときだけ `allowConsole()` で許可する。

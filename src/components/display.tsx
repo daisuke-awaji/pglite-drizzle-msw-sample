@@ -87,9 +87,9 @@ export function AvatarStack({ members, max = 4 }: { members: MemberRef[]; max?: 
 export function Assignee({ member }: { member: MemberRef | null }) {
   if (!member) return <span className="muted">未割り当て</span>
   return (
-    <span className="assignee">
+    <span className="assignee" title={member.name}>
       <MemberAvatar member={member} />
-      {member.name}
+      <span className="truncate">{member.name}</span>
     </span>
   )
 }
