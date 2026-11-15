@@ -160,7 +160,8 @@ describe('メンバーの編集と削除', () => {
     await renderApp('/members')
     const busy = (await ctx.db.query.tasks.findMany({ where: (t, { isNotNull, ne, and }) => and(isNotNull(t.assigneeId), ne(t.status, 'done')) }))[0]!
     const member = (await ctx.db.query.members.findFirst({ where: (m, { eq }) => eq(m.id, busy.assigneeId!) }))!
-    await run({ ref: `${member.name}さんの操作`, action: 'press', args: ['削除'] })
+    fireEvent.click(screen.getByRole('button', { name: `${member.name}さんの操作` }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: '削除' }))
     const dialog = await screen.findByRole('alertdialog')
     expect(dialog).toHaveTextContent(/担当中のタスク \d+ 件は未割り当てになり/)
     fireEvent.click(within(dialog).getByRole('button', { name: 'メンバーを削除' }))
