@@ -73,6 +73,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run test:integration
+      # 本番のサーバー: 接続プール・マイグレーションの実行役・DB の利用者の権限・ビルドした zip（Node 24 で動かす）
+      - run: npm run test:server
 
   # ビルドしたアプリを Chromium で操作する（デスクトップとスマートフォン）
   e2e:

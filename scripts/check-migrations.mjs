@@ -8,6 +8,10 @@
 //     Drizzle は適用済みのファイルの hash を照合しないので、書き換えても本番には反映されない
 //   - CONCURRENTLY。Drizzle は保留中のマイグレーションを 1 つのトランザクションで流すので、必ず失敗する
 // 警告にするもの（新しく足したマイグレーションだけ。ロックや互換性の点でレビューが要る ALTER）
+// 事前の SQL（drizzle/pre/<タグ>.sql。マイグレーションの前にトランザクションの外で流す。server/pre-sql.ts）:
+//   - 失敗: タグが journal にない（流されない）、何度流しても同じにならない文（CONCURRENTLY IF NOT EXISTS の索引と
+//     DROP INDEX CONCURRENTLY IF EXISTS だけを許す）
+//   - 警告: 同じタグのマイグレーションに、同じ名前の CREATE INDEX IF NOT EXISTS がない（PGlite とテストの DB に索引ができない）
 //
 // 使い方: node scripts/check-migrations.mjs [基準の ref]（既定は環境変数 MIGRATIONS_BASE_REF か origin/main）
 import { execFileSync } from 'node:child_process'
@@ -155,6 +159,51 @@ export function checkMigrations(current, base, sqlFileNames) {
   return { errors, warnings }
 }
 
+const PRE_ALLOWED = [
+  /^CREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\s+IF\s+NOT\s+EXISTS\s+"?([A-Za-z0-9_]+)"?\s/i,
+  /^DROP\s+INDEX\s+CONCURRENTLY\s+IF\s+EXISTS\s/i,
+]
+
+/**
+ * 事前の SQL を確かめる
+ * @param {MigrationSet} current
+ * @param {Map<string, string>} preSql タグ → SQL
+ * @returns {{ errors: Finding[], warnings: Finding[] }}
+ */
+export function checkPreSql(current, preSql) {
+  /** @type {Finding[]} */ const errors = []
+  /** @type {Finding[]} */ const warnings = []
+  const tags = new Set(current.journal.entries.map((e) => e.tag))
+  for (const [tag, sql] of preSql) {
+    if (!tags.has(tag)) {
+      errors.push({ tag, message: `pre/${tag}.sql と同じタグのマイグレーションがない（事前の SQL は、そのマイグレーションが未適用のときだけ流れる）` })
+      continue
+    }
+    for (const stmt of statements(sql)) {
+      const body = stmt.replace(/^\s*--.*$/gm, '').trim()
+      const rule = PRE_ALLOWED.find((r) => r.test(body))
+      if (!rule) {
+        errors.push({ tag, message: `事前の SQL に書けるのは CREATE INDEX CONCURRENTLY IF NOT EXISTS と DROP INDEX CONCURRENTLY IF EXISTS だけ（何度流しても同じにする）\n    ${body.split('\n')[0].slice(0, 160)}` })
+        continue
+      }
+      const name = body.match(PRE_ALLOWED[0])?.[1]
+      if (name && !new RegExp(`CREATE\\s+(?:UNIQUE\\s+)?INDEX\\s+IF\\s+NOT\\s+EXISTS\\s+"?${name}"?\\s`, 'i').test(current.sql.get(tag) ?? '')) {
+        warnings.push({ tag, message: `${tag}.sql に CREATE INDEX IF NOT EXISTS "${name}" がない。ブラウザの PGlite とテストの DB では索引ができない（${GUIDE}）` })
+      }
+    }
+  }
+  return { errors, warnings }
+}
+
+/** @returns {Map<string, string>} */
+function readPreSql(dir) {
+  try {
+    return new Map(readdirSync(join(dir, 'pre')).filter((f) => f.endsWith('.sql')).map((f) => [f.replace(/\.sql$/, ''), readFileSync(join(dir, 'pre', f), 'utf8')]))
+  } catch {
+    return new Map()
+  }
+}
+
 /** @returns {MigrationSet & { files: string[] }} */
 function readWorkingTree(dir) {
   const files = readdirSync(dir).filter((f) => f.endsWith('.sql'))
@@ -185,6 +234,9 @@ function main() {
   const base = readRef(ref)
   const inCi = Boolean(process.env.CI)
   const { errors, warnings } = checkMigrations(current, base, current.files)
+  const pre = checkPreSql(current, readPreSql('drizzle'))
+  errors.push(...pre.errors)
+  warnings.push(...pre.warnings)
   if (!base) {
     const message = `基準の ${ref} が見つからないので、適用済みのマイグレーションが書き換わっていないかは確かめていません（git fetch origin main）`
     if (inCi) errors.push({ tag: '-', message })

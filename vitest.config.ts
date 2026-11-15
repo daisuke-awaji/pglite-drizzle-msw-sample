@@ -35,6 +35,33 @@ export default mergeConfig(
             globalSetup: ['./src/test/postgres-global-setup.ts'],
           },
         },
+        {
+          // 本番のサーバー（server/）。DB を使わないものは毎回走らせる
+          extends: true,
+          test: {
+            name: 'server',
+            environment: 'node',
+            include: ['server/**/*.test.ts', 'scripts/**/*.test.ts'],
+            exclude: ['server/**/*.pg.test.ts'],
+          },
+        },
+        // 本物の PostgreSQL が要るもの（接続プール・マイグレーションの実行役・DB の利用者・ビルドした zip）。
+        // TEST_DATABASE_URL があるとき（CI の integration-postgres）だけ走らせる
+        ...(process.env.TEST_DATABASE_URL
+          ? [
+              {
+                extends: true,
+                test: {
+                  name: 'server-postgres',
+                  environment: 'node',
+                  include: ['server/**/*.pg.test.ts'],
+                  testTimeout: 60_000,
+                  hookTimeout: 60_000,
+                  globalSetup: ['./src/test/postgres-global-setup.ts'],
+                },
+              },
+            ]
+          : []),
       ],
       coverage: {
         provider: 'v8',

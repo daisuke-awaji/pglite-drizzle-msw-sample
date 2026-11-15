@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { describe, expect, test } from 'vitest'
-import { checkMigrations } from './check-migrations.mjs'
+import { checkMigrations, checkPreSql } from './check-migrations.mjs'
 
 /** @param {[string, number, string][]} list [tag, when, sql] */
 function set(list) {
@@ -98,5 +98,29 @@ describe('レビューが要る ALTER（警告にする）', () => {
     const old = ['0001_old', 2000, 'ALTER TABLE "tasks" DROP COLUMN "title";']
     const current = set([INIT, old])
     expect(checkMigrations(current, set([INIT, old]), files(current)).warnings).toEqual([])
+  })
+})
+
+describe('事前の SQL（drizzle/pre）', () => {
+  const current = set([INIT, ['0001_idx', 2000, 'CREATE INDEX IF NOT EXISTS "tasks_title_idx" ON "tasks" USING btree ("title");']])
+
+  test('CONCURRENTLY IF NOT EXISTS の索引で、マイグレーションにも IF NOT EXISTS があれば何も言わない', () => {
+    const pre = new Map([['0001_idx', 'CREATE INDEX CONCURRENTLY IF NOT EXISTS "tasks_title_idx" ON "tasks" ("title");']])
+    expect(checkPreSql(current, pre)).toEqual({ errors: [], warnings: [] })
+  })
+
+  test('タグがない・何度流すと失敗する文は失敗にする', () => {
+    const pre = new Map([
+      ['0009_missing', 'CREATE INDEX CONCURRENTLY IF NOT EXISTS "x" ON "tasks" ("title");'],
+      ['0001_idx', 'CREATE INDEX CONCURRENTLY "tasks_title_idx" ON "tasks" ("title");\n--> statement-breakpoint\nUPDATE tasks SET title = lower(title);'],
+    ])
+    const { errors } = checkPreSql(current, pre)
+    expect(errors.map((e) => e.tag)).toEqual(['0009_missing', '0001_idx', '0001_idx'])
+    expect(errors[1].message).toMatch(/CONCURRENTLY IF NOT EXISTS/)
+  })
+
+  test('マイグレーションに同じ名前の索引がなければ警告する（PGlite とテストの DB に索引ができない）', () => {
+    const pre = new Map([['0001_idx', 'CREATE INDEX CONCURRENTLY IF NOT EXISTS "other_idx" ON "tasks" ("title");']])
+    expect(checkPreSql(current, pre).warnings).toHaveLength(1)
   })
 })

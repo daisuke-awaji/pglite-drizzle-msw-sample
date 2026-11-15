@@ -55,7 +55,18 @@ export const errorResponse = (status: number, error: string, fieldErrors?: ApiEr
  */
 export async function respond(
   route: Route,
-  { db, request, params }: { db: Db | Promise<Db>; request: Request; params: Params },
+  {
+    db,
+    request,
+    params,
+    onUnexpectedError = (e) => console.error(e),
+  }: {
+    db: Db | Promise<Db>
+    request: Request
+    params: Params
+    /** 想定外の例外の記録先。既定はコンソール。本番のサーバーは構造化したログに出す（server/app.ts） */
+    onUnexpectedError?: (e: unknown) => void
+  },
 ): Promise<Response> {
   try {
     const result = await route.handle({
@@ -69,7 +80,7 @@ export async function respond(
     return json(result, request.method === 'POST' ? 201 : 200)
   } catch (e) {
     if (e instanceof HttpError) return errorResponse(e.status, e.message, e.fieldErrors)
-    console.error(e)
+    onUnexpectedError(e)
     return errorResponse(500, 'サーバーでエラーが発生しました')
   }
 }
