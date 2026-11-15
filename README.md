@@ -298,11 +298,15 @@ MSW・PGlite・開発用の機能（設定画面の「API の遅延」「障害�
 
 | 帯 | 構成 | ポイント |
 |---|---|---|
-| Edge & Auth | Route 53 → CloudFront（AWS WAF）→ `/*` は S3、`/api/*` は ALB | 画面と API を同じドメインで配るので、CORS もビルドの設定もいらない（API の向き先は既定で `/api`）。ログイン（Cognito）は Phase 4 |
-| Compute | CloudFront の VPC オリジン → 内部 ALB → ECS on Fargate（2 AZ） | `src/server/routes.ts` を Hono に登録したサーバー。ALB はインターネットに出さない。NAT Gateway は置かず VPC endpoints で出る |
+| Edge & Auth | Route 53 → CloudFront（AWS WAF）→ `/*` は S3、`/api/*` は Lambda Web Function | 画面と API を同じドメインで配るので、CORS もビルドの設定もいらない（API の向き先は既定で `/api`）。ログイン（Cognito）は Phase 4 |
+| Compute | **Lambda Web Functions**（Node 24）。外向きの通信は Network Connector で VPC へ。マイグレーションは Lambda 関数 | `src/server/routes.ts` を Hono に登録した HTTP サーバーをそのまま載せる。endpoint は `IamAuth` で、CloudFront が OAC で署名したリクエストだけを受ける。NAT Gateway は置かず、Secrets Manager へは VPC endpoint で出る |
 | Data & Storage | Aurora PostgreSQL 18 Serverless v2（Writer + 別 AZ の Reader）、Secrets Manager、KMS、AWS Backup | ブラウザの PGlite（PostgreSQL 18.6）と同じメジャーバージョン。DB の利用者はアプリ用（読み書きだけ）とマイグレーション用に分ける |
 
 `src/server` はそのまま使えます。本物の PostgreSQL 18.6 に node-postgres でつなぎ、結合テスト 78 件が通ることを確かめてあります。
+Web Functions の入口の試作（`AWS_LAMBDA_HTTP_ENDPOINT` で listen、DB には最初のリクエストでつなぐ、`SIGTERM` で 1 秒以内に止まる）も、Node 24 と PostgreSQL 18.6 で確かめました（AWS の上ではまだ動かしていません）。
+
+**Fargate は、Lambda の制約に当たって載らないものだけに使います。** 15 分を超える SQL やバッチ（リハーサルで測る）、2 vCPU・2 GB や 900 秒を超える処理、WebSocket、
+API の入口を閉域網だけにする要件などです。最初は作らず、必要になったら足します（[Fargate を使うとき](docs/production.md#fargate-を使うとき)）。
 
 > 今の API には認証がありません。認証（Phase 4）が入るまでは、本番のデータを載せて公開せず、WAF で社内の IP だけを通すなど入口で絞ってください。
 
@@ -310,21 +314,23 @@ MSW・PGlite・開発用の機能（設定画面の「API の遅延」「障害�
 
 `main` に入ると stg へ自動で、GitHub Environments で承認すると prod へ、同じ手順で入ります（GitHub Actions から OIDC で AWS に入る）。順番は入れ替えません。
 
-1. イメージを ECR に push（タグはコミット SHA）し、画面を `VITE_USE_MOCK=false` でビルドする
-2. migrate のタスク定義だけを新しいイメージにする（`cdk deploy <env>-Migrate`）
-3. **マイグレーションを RunTask で 1 回だけ流す。** 失敗したらここで止まり、API も画面も古いまま
-4. API をローリング更新する（失敗やアラームで ECS が前のバージョンに戻す）
-5. 画面の JS・CSS を置いてから `index.html` を置き、`index.html` のキャッシュだけを消す（古い JS は消さない）
-6. スモークテスト（`/api/readyz` と、データを変えない主な画面）
+1. サーバーを esbuild で 1 つの zip にし（キーはコミット SHA）、S3 に置く。画面を `VITE_USE_MOCK=false` でビルドする
+2. migrate 関数だけを新しい zip にする（`cdk deploy <env>-Migrate`）
+3. **マイグレーションを migrate 関数で 1 回だけ流す。** 失敗したらここで止まり、API も画面も古いまま
+4. 新しい revision を作り、確認用の endpoint（`next`）でスモークテストする
+5. 本番の endpoint（`live`）を新しい revision に切り替える（prod は 10% を 10 分流してから）。1 つ前の revision は `next` に残す
+6. 画面の JS・CSS を置いてから `index.html` を置き、`index.html` のキャッシュだけを消す（古い JS は消さない）
+7. スモークテスト（CloudFront 経由で、データを変えない主な画面）
 
-戻すときは、API と画面は前のコミット SHA で出し直します。DB のスキーマは戻さず、直すマイグレーションを足して前に進めます。
+戻すときは、API は `live` を 1 つ前の revision に向け直します（数秒。作り直さない）。画面は前のビルドの `index.html` を置き直します。
+DB のスキーマは戻さず、直すマイグレーションを足して前に進めます。
 
 ### マイグレーション（ALTER）の決まり
 
 Drizzle の migrator は、未適用のマイグレーションを 1 つのトランザクションで流し、適用済みかを `when`（生成した時刻）だけで決めます。
 この性質と、ALTER のロックの振る舞いを PostgreSQL 18.6 で確かめた結果から、次の決まりにしています（詳しくは [docs/production.md#マイグレーション](docs/production.md#マイグレーション)）。
 
-- **流すのはデプロイの中で 1 回だけ、API より先。** 実行役は advisory lock で同時に流さず、`lock_timeout` でロック待ちのまま普通の SELECT まで止めることを防ぎ、あきらめたら待ってやり直す。
+- **流すのはデプロイの中で 1 回だけ、API より先。** 実行役（Lambda 関数）は advisory lock で同時に流さず、`lock_timeout` でロック待ちのまま普通の SELECT まで止めることを防ぎ、あきらめたら待ってやり直す（15 分に収まる範囲で）。
 - **1 つ前の API と、開いたままの画面が動くこと。** 列を消す・名前を変える・型を変えるは、1 回のリリースでしない。「足す → 移す → 切り替える → 消す」とリリースをまたぐ。
 - **`main` に入ったものは書き換えない。** 書き換えても適用済みの DB には反映されない（Drizzle は hash を照合しない）。間違いは直すマイグレーションを足す。
 - **ほかのブランチのマイグレーションが先に `main` に入ったら、自分のものを作り直す。** `when` が古いままマージすると、本番では**エラーにならずに飛ばされる**（再現して確かめた）。
@@ -344,10 +350,10 @@ journal に載っていない SQL、`CONCURRENTLY`。上の表の書き方は**�
 
 ### 運用
 
-- **監視**: CloudFront・ALB の 5xx と応答時間、正常なタスクの数、Aurora の ACU・接続数・デッドロック、画面の JS エラー（CloudWatch RUM）、費用。アラームは Slack に送る。
+- **監視**: CloudFront と Web Function の 5xx、API の応答時間（アプリが出す）、起動の失敗、スロットリングと実行環境の数、Aurora の ACU・接続数・デッドロック、画面の JS エラー（CloudWatch RUM）、費用。アラームは Slack に送る。
 - **バックアップ**: Aurora の PITR（35 日）と AWS Backup（月 1 回を 1 年）。目標は RPO 5 分・RTO 2 時間（案）。3 か月に 1 回、stg で復元を練習する。
 - **手順書**: デプロイ・マイグレーションの失敗、DB のフェイルオーバー、誤って消したデータの復元、DB に直接入るとき、秘密情報のローテーション、メジャーバージョンアップ（[docs/production.md#手順書ランブック](docs/production.md#手順書ランブック)）。
-- **進め方**: Phase 0（この計画とマイグレーションの検査。済み）→ 1 サーバー（`server/`・Dockerfile・本物の PostgreSQL での CI）→ 2 基盤（CDK）→ 3 デプロイ → 4 認証 → 5 本番の開始。
+- **進め方**: Phase 0（この計画とマイグレーションの検査。済み）→ 1 サーバー（Node 24 にそろえる・`server/`・zip のビルド・本物の PostgreSQL での CI）→ 2 基盤（CDK）→ 3 デプロイ → 4 認証 → 5 本番の開始。
 
 ## ディレクトリ
 
