@@ -68,8 +68,10 @@ describe('接続プール', () => {
     const { provider, lines } = urlProvider({ applicationName: name })
     const d = await provider.get()
     await Promise.all(Array.from({ length: 5 }, () => d.select().from(projects)))
-    await adminQuery('SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = $1', [name])
-    await vi.waitFor(() => expect(lines.some((l) => l.type === 'db.idle-client-error')).toBe(true))
+    const killed = (await adminQuery('SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = $1', [name])).rowCount ?? 0
+    expect(killed).toBeGreaterThan(0)
+    // 切れたことがプールに届いた接続は捨てられる。全部届くのを待つ（届く前の接続を引くと、その 1 本は失敗する。本物のフェイルオーバーも同じ）
+    await vi.waitFor(() => expect(lines.filter((l) => l.type === 'db.idle-client-error')).toHaveLength(killed))
     await expect(d.select().from(projects)).resolves.toEqual([])
   })
 })
