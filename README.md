@@ -25,17 +25,25 @@ PostgreSQL（[PGlite](https://pglite.dev/)）をブラウザで動かし、[Driz
 | 検証 | Zod（サーバー層と画面で同じスキーマを使う） |
 | DB | PGlite（IndexedDB に保存）+ Drizzle ORM + drizzle-kit |
 | API | MSW（Service Worker） |
-| テスト | Vitest + Testing Library + `@ui-sdk/core/testing`、DB は Node 上の PGlite |
+| テスト | Vitest + Testing Library（unit / integration）、Playwright + axe-core（e2e）、v8 のカバレッジ |
+| 静的検査 | oxlint（react / jsx-a11y / import / vitest / promise）、TypeScript の strict |
 
 ## 使い方
 
 ```bash
 npm ci
-npm run dev        # http://localhost:5173/
-npm test           # サーバー層（本物の PostgreSQL）・独自 primitive・エージェントのテスト
-npm run lint
-npm run build      # dist/ に出力（404.html も作る）
+npm run dev               # http://localhost:5173/
+npm run check             # lint + 型 + unit/integration（カバレッジの基準つき）。push の前にこれを通す
+npm run test:e2e          # ビルドして Chromium で操作する（初回は npx playwright install chromium）
+npm run build             # dist/ に出力（404.html も作る）
 ```
+
+| コマンド | 内容 |
+|---|---|
+| `npm run test:watch` | unit テストだけを監視モードで（保存のたびに数秒で終わる） |
+| `npm run test:unit` / `test:integration` | 層ごとに実行 |
+| `npm run test:coverage` | カバレッジ付きで全部。`coverage/index.html` に結果 |
+| `npm run lint` / `typecheck` | 警告も失敗として扱う |
 
 初回は PGlite の WASM とデータ（gzip 後でおよそ 5MB）を読み込むので数秒かかります。
 データはブラウザごとに IndexedDB へ保存され、初回起動時にサンプルデータが入ります。設定画面から初期化できます。
@@ -154,17 +162,79 @@ await agent.act({ steps: [{ ref: 'プロジェクトメンバーの割り当て'
 削除や初期化のボタンには `data-agent-confirm` を付けてあり、エージェントが押そうとすると
 「エージェントの操作を許可しますか？」と人に確認します（`allow`）。
 
+## エラーの扱い
+
+失敗を「利用者が次に何をすればよいか」で分け、どの画面でも同じ出し方にしています。
+
+| 失敗 | 例 | 画面での出し方 | 実装 |
+|---|---|---|---|
+| 入力の誤り | 400（項目ごとのエラー付き） | 項目の下に出し、`aria-invalid` を付ける。入力は消さない | `validate` / `run`（`src/routes/lib.ts`） |
+| やり直しても変わらない | 404・403・409 | 画面: 状態コードと理由。保存: トースト | `load` が `data(..., { status })` にする |
+| やり直せば直りうる | 通信断・5xx・429 | 画面: 「再試行」ボタン。保存: トースト | `ApiError.retryable` |
+| 想定外の例外 | 描画中の例外、JSON でない応答 | 「問題が発生しました」と再読み込み。内部の文言は出さない（開発時だけ詳細を出す） | `ErrorView`、`reportError` |
+| 起動の失敗 | IndexedDB・Service Worker が使えない | 理由と対処、データを消してやり直すボタン | `src/boot-error.ts` |
+
+- エラーの画面に切り替わったら、見出しへフォーカスを移します（スクリーンリーダーでも気づける）。
+- サイドバーと設定画面は API が失敗しても表示するので、行き止まりになりません。
+- 保存していない変更があるときは、画面の移動とタブを閉じる前に確認します（`useUnsavedChanges`）。
+- 想定外のエラーは `src/lib/report-error.ts` に集まります。本番では Sentry や CloudWatch RUM へ送る処理をここに足してください。
+
+**障害シミュレーション**: 設定画面で「保存だけ失敗させる」「すべて失敗させる」「サーバーにつながらない」を選ぶと、
+モック API がその通りに失敗します。「API の遅延」と組み合わせると、読み込み中の表示も確かめられます。
+この設定は保存されず、ページを読み込み直すと元に戻ります。
+
+## スマートフォンとアクセシビリティ
+
+WCAG 2.2 AA を目標にし、e2e で axe-core（重大・深刻な違反が 0 件）を全画面・ライト/ダーク・デスクトップ/スマートフォンで確かめています。
+
+- **720px 以下**: サイドバーは左から出るドロワー、パンくずは「戻る」リンク、表はカード、絞り込みは開閉式、ダイアログは画面下からのシート。
+  Select と Menu は、指で開くと画面下からのシートになります（`presentation="auto"`）。
+- **タッチ端末**: 押せる部品を 44px 以上にします（`@media (pointer: coarse)` で `--ui-spacing` を広げる）。入力欄は 16px にして iOS の拡大を防ぎます。
+- **キーボード**: 最初の Tab で「メインコンテンツへ移動」。画面を移ると見出しへフォーカスを移し、「〇〇を表示しました」と読み上げます。
+  検索欄の入力中など、同じ画面で URL だけが変わるときはフォーカスを奪いません。
+- **色**: フォーカスの輪は背景と 3:1 以上。期限切れは色だけでなくアイコンでも示します。動きを減らす設定と強制カラーにも対応しています。
+- タブのタイトルは「いまの画面 | Starter Kit」になります（エラーのときはエラーの見出し）。
+
 ## テスト
 
-| ファイル | 確かめていること |
-|---|---|
-| `src/server/server.test.ts` | Node 上の PGlite に本番と同じマイグレーションを流し、CASCADE / SET NULL、担当者の業務ルール、部分更新、検証エラー、絞り込み・ページング、集計 |
-| `src/components/transfer-list/*.test.ts(x)` | キーボード、フォーカス、`aria-selected` / `aria-disabled`、読み上げ、変更の取り消し、サーバー描画、エージェントの操作 |
-| `src/routes/project-tasks.test.tsx` | すべての部品に名前があること、エージェントが絞り込み（URL に入る）・タスク作成・完了ができること |
+| 層 | 置き場所 | 何を確かめるか | 速さ |
+|---|---|---|---|
+| unit | `src/**/*.test.ts(x)` | 部品（キーボード・フォーカス・ARIA）、エラーの出し分け、起動失敗の画面、**層の依存**（`src/architecture.test.ts`） | 数秒 |
+| integration | `src/**/*.integration.test.ts(x)` | 本物の PostgreSQL（PGlite）に本番と同じマイグレーションを流して、サーバー層・**全エンドポイント**・**画面**（本物のルート定義を本物の API につないで描画） | 1 分ほど |
+| e2e | `e2e/*.spec.ts` | ビルドしたアプリを Chromium で操作。全画面の axe・はみ出し・フォーカス・ドロワー・タッチの大きさ、主な業務の流れ、障害シミュレーション、起動失敗 | 数分 |
+
+テストの決まり:
+
+- **コンソールのエラー・警告は失敗にします**（unit/integration は `src/test/console.ts`、e2e は `e2e/fixtures.ts`）。わざと出すテストだけ `allowConsole()` / `allowConsoleErrors()` で許可します。
+- **テストは乱数順で走ります。** 前のテストのデータを当てにしないでください。DB はテストごとに複製し直します（`src/test/db.ts`）。
+- **エンドポイントを足したら `src/api/api.integration.test.ts` にもケースを足します。** すべてのハンドラーにケースがあるかを、最後のテストが確かめます。
+- **DB を使うテストは `*.integration.test.*` に置きます。** unit が遅くならないよう、構造テストが確かめます。
+- **カバレッジの基準**（`vitest.config.ts`）を下回ると CI が落ちます。基準は上げてよいですが、理由なく下げないでください。
+  数字より「壊れても気づけない振る舞いがないか」を見てください（エラーの分岐、境界値、権限、状態の遷移）。
+
+構造テスト（`src/architecture.test.ts`）で、次の依存を禁止しています。
+
+- `src/server` から HTTP・画面・ブラウザ用の DB（本番のバックエンドにそのまま移せるように）
+- `src/shared` から Zod 以外
+- 画面（`routes`・`components`）から `server`・`db`・`mocks`（必ず API クライアントを通す）
+- 本番のコードからテスト用のコード
+
+## 新しい画面・機能を足すとき
+
+1. 入力の形を `src/shared/schemas.ts` に Zod で書く（サーバー層と画面の両方で使う）
+2. 業務ロジックを `src/server/*.ts` に書き、`*.integration.test.ts` で本物の DB に対して確かめる
+3. `src/mocks/handlers.ts` にルートを足し、`src/api/client.ts` に関数を足し、`api.integration.test.ts` にケースを足す
+4. `src/routes/*.tsx` に `loader` / `action` / `Component` を書き、`router.tsx` に並べる。`handle.crumb` でパンくずとタブのタイトルが決まる
+   - 読み込みは `load()`、保存は `validate()` と `run()` を通す（エラーの出し方がそろう）
+   - 表には `table-stack` クラスと各セルの `data-label` を付ける（スマートフォンでカードになる）
+   - アイコンだけのボタンには `aria-label` を付ける
+5. `app.integration.test.tsx` に画面のテストを、`e2e/pages.spec.ts` の一覧に URL を足す
+6. `npm run check` と `npm run test:e2e` を通す
 
 ## GitHub Pages に公開する
 
-`main` に push すると `.github/workflows/deploy.yml` が lint・テスト・ビルドをして公開します
+push すると `.github/workflows/ci.yml` が lint・型・unit/integration（カバレッジ）・e2e を走らせ、
+`main` のときだけビルドして公開します
 （Settings → Pages の Source は「GitHub Actions」）。`https://<user>.github.io/<repo>/` で動くよう、ビルド時に
 `BASE_PATH=/<repo>/` を渡し、ルーター・Service Worker・API のパスもそれに合わせています。
 `/projects/1` のような URL を直接開けるように、ビルドで `index.html` を `404.html` に複製しています。
@@ -211,11 +281,14 @@ src/
   routes/       画面ごとの loader / action / Component（router.tsx で並べる）
   components/   フォームの部品、表示の部品、コマンドパレット、確認ダイアログ、transfer-list/
   stores/       Zustand（preferences: localStorage、drafts: sessionStorage）
-  api/          fetch だけの API クライアント
+  api/          fetch だけの API クライアント（ApiError で失敗の種類を分ける）
+  lib/          画面で共通に使うフック（未保存の確認・オンライン状態）とエラーの記録
   mocks/        MSW（HTTP ⇔ src/server の橋渡し）
   server/       業務ロジック（本番にそのまま持っていく）
   shared/       Zod スキーマ・DTO の型・enum（DB・API・画面で共有）
   db/           Drizzle のスキーマと、ブラウザ用の PGlite 起動・マイグレーター
+  test/         テストの道具（DB の複製、本物の API、画面の描画、コンソールの監視）
+e2e/            Playwright の e2e（fixtures.ts に共通の確認）
 drizzle/        drizzle-kit が生成したマイグレーション SQL
 ```
 
