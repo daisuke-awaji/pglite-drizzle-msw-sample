@@ -146,12 +146,13 @@ describe('api.zip（index.js）', () => {
   })
 })
 
+const b64 = (v: unknown) => Buffer.from(JSON.stringify(v)).toString('base64url')
+
 describe('api.zip のログイン（AUTH_MODE=cognito）', () => {
   // 手元で作った鍵を JWKS として渡し（デプロイの手順が User Pool の JWKS を渡すのと同じ）、その鍵で署名した ID トークンを送る
   const pool = 'ap-northeast-1_BundleTest'
   const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
   const jwks = JSON.stringify({ keys: [{ ...publicKey.export({ format: 'jwk' }), kid: 'k1', alg: 'RS256', use: 'sig' }] })
-  const b64 = (v: unknown) => Buffer.from(JSON.stringify(v)).toString('base64url')
   const idToken = (email: string) => {
     const now = Math.floor(Date.now() / 1000)
     const body = `${b64({ alg: 'RS256', kid: 'k1' })}.${b64({ iss: `https://cognito-idp.ap-northeast-1.amazonaws.com/${pool}`, aud: 'client-1', token_use: 'id', email, email_verified: true, iat: now, exp: now + 600 })}`
