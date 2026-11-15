@@ -22,7 +22,7 @@ export function ThemeMenu() {
   const setTheme = usePreferences((s) => s.setTheme)
   const Current = THEMES.find((t) => t.value === theme)?.icon ?? MonitorIcon
   return (
-    <Menu>
+    <Menu presentation="auto">
       <MenuTrigger aria-label="テーマ" data-variant="ghost">
         <Current aria-hidden="true" />
       </MenuTrigger>

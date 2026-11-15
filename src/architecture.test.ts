@@ -1,26 +1,24 @@
-// @vitest-environment node
-import { readdirSync, readFileSync, statSync } from 'node:fs'
-import { join, relative } from 'node:path'
 import { describe, expect, test } from 'vitest'
 
 // 構造のテスト。「どの層がどの層を知ってよいか」をコードで固定し、レビューで見落としても CI で止める。
 // 本番に移るとき src/server をそのままバックエンドに持っていけるのは、この決まりが守られているから
 
-const SRC = join(import.meta.dirname)
+// Vite の機能で src/ の全ファイルを文字列として読む（Node の fs に頼らないので型もブラウザ用のままでよい）
+const raw = import.meta.glob<string>(['./**/*.ts', './**/*.tsx', '!./**/*.d.ts'], {
+  query: '?raw',
+  import: 'default',
+  eager: true,
+})
 
-function files(dir: string): string[] {
-  return readdirSync(dir).flatMap((name) => {
-    const path = join(dir, name)
-    return statSync(path).isDirectory() ? files(path) : /\.(ts|tsx)$/.test(name) ? [path] : []
-  })
-}
-
-const sources = files(SRC).map((path) => ({
-  path: relative(SRC, path).replaceAll('\\', '/'),
-  imports: [...readFileSync(path, 'utf8').matchAll(/^\s*(?:import|export)\s[^'"]*?from\s+['"]([^'"]+)['"]/gm)].map(
-    (m) => m[1]!,
-  ),
+const sources = Object.entries(raw).map(([path, code]) => ({
+  path: path.replace(/^\.\//, ''),
+  imports: [...code.matchAll(/^\s*(?:import|export)\s[^'"]*?from\s+['"]([^'"]+)['"]/gm)].map((m) => m[1]!),
 }))
+
+test('src/ のファイルを読めている', () => {
+  expect(sources.length).toBeGreaterThan(40)
+  expect(sources.map((s) => s.path)).toContain('server/tasks.ts')
+})
 
 const isTest = (path: string) => /\.test\.tsx?$/.test(path) || path.startsWith('test/')
 const prod = sources.filter((s) => !isTest(s.path))

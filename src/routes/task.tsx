@@ -1,5 +1,6 @@
 import { Button } from '@ui-sdk/react/button'
 import { Trash2Icon } from 'lucide-react'
+import { useState } from 'react'
 import { Link, redirect, useFetcher, useLoaderData, type Params } from 'react-router'
 import { api } from '../api/client'
 import { confirmDanger } from '../components/confirm-danger'
@@ -8,6 +9,7 @@ import { DateField, MultiComboboxField, SelectField, TextareaField, TextField } 
 import { PRIORITIES, PRIORITY_LABEL, STATUS_LABEL, TASK_STATUSES } from '../shared/enums'
 import { commentInput, taskPatch } from '../shared/schemas'
 import type { Comment, TaskDetail } from '../shared/types'
+import { useUnsavedChanges } from '../lib/use-unsaved-changes'
 import { errorsFor, idParam, intentOf, load, run, unknownIntent, validate, type ActionResult } from './lib'
 
 export const handle = {
@@ -63,25 +65,47 @@ export function Component() {
   return (
     <div className="page">
       <h1 className="sr-only">{task.title}</h1>
+      {/* 狭い画面では「本文 → 属性 → コメント」の順に並べる（CSS の grid-template-areas） */}
       <div className="detail">
         <div className="detail-main">
           <TaskForm key={task.id} task={task} />
-          <Comments task={task} />
         </div>
         <aside className="detail-side card" aria-label="タスクの属性">
           <Properties task={task} />
         </aside>
+        <div className="detail-comments">
+          <Comments task={task} />
+        </div>
       </div>
     </div>
   )
 }
 
-// 明示的に保存するフォーム（タイトルと説明）
+// 明示的に保存するフォーム（タイトルと説明）。保存前に画面を離れようとしたら確認する
 function TaskForm({ task }: { task: TaskDetail }) {
   const fetcher = useFetcher<ActionResult>()
   const errors = errorsFor(fetcher.data, 'save')
+  const [dirty, setDirty] = useState(false)
+  useUnsavedChanges(dirty && fetcher.state === 'idle')
+
+  // 保存できたら「変更なし」に戻す
+  const saved = fetcher.state === 'idle' && fetcher.data?.ok === true && fetcher.data.intent === 'save'
+  const [lastSaved, setLastSaved] = useState(fetcher.data)
+  if (saved && fetcher.data !== lastSaved) {
+    setLastSaved(fetcher.data)
+    setDirty(false)
+  }
+
   return (
-    <fetcher.Form method="post" className="form" noValidate>
+    <fetcher.Form
+      method="post"
+      className="form"
+      noValidate
+      onChange={(e) => {
+        const form = new FormData(e.currentTarget)
+        setDirty(form.get('title') !== task.title || form.get('description') !== task.description)
+      }}
+    >
       <input type="hidden" name="intent" value="save" />
       <TextField label="タイトル" name="title" defaultValue={task.title} required errors={errors.title} className="title-input" />
       <TextareaField label="説明" name="description" defaultValue={task.description} errors={errors.description} rows={6} />

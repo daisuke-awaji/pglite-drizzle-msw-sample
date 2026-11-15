@@ -97,7 +97,8 @@ export function SelectField({
   disabled?: boolean
   required?: boolean
 }) {
-  const props: SelectProps<string> = { name, items, ...select }
+  // 指で操作する狭い画面では、一覧を画面下からのシートで出す
+  const props: SelectProps<string> = { name, items, presentation: 'auto', ...select }
   return (
     <FieldShell label={label} name={name} errors={errors} description={description}>
       <Select {...props}>
@@ -161,7 +162,7 @@ export function MultiComboboxField({
   disabled?: boolean
 }) {
   const labelOf = (value: unknown) => items.find((i) => i.value === value)?.label ?? String(value)
-  const props: ComboboxProps<string, true> = { name, multiple: true, itemToLabel: labelOf, ...combobox }
+  const props: ComboboxProps<string, true> = { name, multiple: true, itemToLabel: labelOf, presentation: 'auto', ...combobox }
   return (
     <FieldShell label={label} name={name} errors={errors} description={description}>
       <Combobox {...props}>

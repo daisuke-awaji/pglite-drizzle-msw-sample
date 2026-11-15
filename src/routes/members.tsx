@@ -71,7 +71,8 @@ export function Component() {
         <EmptyState icon={UsersIcon} title="メンバーがいません" />
       ) : (
         <div className="table-wrap">
-          <table className="table">
+          <table className="table table-stack">
+            <caption className="sr-only">メンバーの一覧</caption>
             <thead>
               <tr>
                 <th scope="col">名前</th>
@@ -116,18 +117,25 @@ function MemberRow({ member }: { member: MemberListItem }) {
 
   return (
     <tr>
-      <td>
+      <td className="cell-primary">
         <span className="assignee">
           <MemberAvatar member={member} />
           {member.name}
         </span>
       </td>
-      <td className="muted">{member.email}</td>
-      <td>{member.title || <span className="muted">—</span>}</td>
-      <td className="num tabular">{member.projectCount}</td>
-      <td className="num tabular">{member.openTaskCount}</td>
+      <td className="muted cell-break" data-label="メール">
+        {member.email}
+      </td>
+      <td data-label="役割">{member.title || <span className="muted">—</span>}</td>
+      <td className="num tabular" data-label="プロジェクト">
+        {member.projectCount}
+      </td>
+      <td className="num tabular" data-label="未完了のタスク">
+        {member.openTaskCount}
+      </td>
       <td className="col-actions">
         <Menu
+          presentation="auto"
           onAction={(value) => {
             if (value === 'edit') memberDialog.open({ payload: member })
             if (value === 'delete') return remove()
