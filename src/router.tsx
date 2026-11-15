@@ -1,4 +1,4 @@
-import { createBrowserRouter, data } from 'react-router'
+import { createBrowserRouter, data, type RouteObject } from 'react-router'
 import * as dashboard from './routes/dashboard'
 import * as members from './routes/members'
 import * as project from './routes/project'
@@ -12,9 +12,8 @@ import * as task from './routes/task'
 
 // ルートごとに loader（読む）・action（書く）・Component をまとめたモジュールを並べる。
 // action が成功すると、表示中のルートの loader を React Router が自動で読み直す。
-export function createRouter() {
-  return createBrowserRouter(
-    [
+// テストでは同じ routes を createMemoryRouter に渡して、本物の画面をそのまま動かす
+export const routes: RouteObject[] = [
       {
         id: 'root',
         path: '/',
@@ -47,6 +46,7 @@ export function createRouter() {
               { path: 'settings', ...settings },
               {
                 path: '*',
+                Component: () => null,
                 loader: () => {
                   throw data('お探しのページは存在しません', { status: 404 })
                 },
@@ -55,7 +55,8 @@ export function createRouter() {
           },
         ],
       },
-    ],
-    { basename: import.meta.env.BASE_URL.replace(/\/$/, '') || '/' },
-  )
+]
+
+export function createRouter() {
+  return createBrowserRouter(routes, { basename: import.meta.env.BASE_URL.replace(/\/$/, '') || '/' })
 }

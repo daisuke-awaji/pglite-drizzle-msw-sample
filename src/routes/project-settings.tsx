@@ -84,7 +84,9 @@ export function Component() {
           <AlertDialogBackdrop />
           <AlertDialogContent>
             <AlertDialogTitle>「{project.name}」を削除しますか？</AlertDialogTitle>
-            <AlertDialogDescription>この操作は取り消せません。</AlertDialogDescription>
+            <AlertDialogDescription>
+              タスク {project.taskCount} 件と、そのコメントもすべて削除します。この操作は取り消せません。
+            </AlertDialogDescription>
             <div className="dialog-actions">
               <AlertDialogClose>キャンセル</AlertDialogClose>
               <AlertDialogClose
