@@ -56,7 +56,7 @@ const selectedOn = (state: State, side: Side) => {
 // 移動元に残った項目のうち、外れた項目に最も近いもの（後ろを優先）
 function nearest(order: string[], keep: (id: string) => boolean, from: string): string | undefined {
   const at = order.indexOf(from)
-  return order.slice(at + 1).find(keep) ?? order.slice(0, Math.max(at, 0)).reverse().find(keep)
+  return order.slice(at + 1).find(keep) ?? order.slice(0, Math.max(at, 0)).toReversed().find(keep)
 }
 
 export const transferList = definePrimitive({

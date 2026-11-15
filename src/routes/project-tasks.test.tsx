@@ -46,7 +46,7 @@ const page = (items: TaskListItem[]): Page<TaskListItem> => ({ items, total: ite
 
 function renderTasks() {
   const router = createMemoryRouter(
-    [{ id: 'project', path: '/projects/:projectId', loader: () => project, children: [{ path: 'tasks', loader, action, Component }] }],
+    [{ id: 'project', path: '/projects/:projectId', loader: () => project, HydrateFallback: () => null, children: [{ path: 'tasks', loader, action, Component }] }],
     { initialEntries: ['/projects/1/tasks'] },
   )
   render(<RouterProvider router={router} />)
