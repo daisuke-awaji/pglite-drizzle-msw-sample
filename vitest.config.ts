@@ -31,6 +31,8 @@ export default mergeConfig(
             include: ['src/**/*.integration.test.{ts,tsx}'],
             testTimeout: 20_000,
             hookTimeout: 30_000,
+            // TEST_DATABASE_URL があれば本物の PostgreSQL に流す（src/test/db.ts）。前後で複製した DB を掃除する
+            globalSetup: ['./src/test/postgres-global-setup.ts'],
           },
         },
       ],

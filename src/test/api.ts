@@ -36,7 +36,7 @@ export function setupTestApi() {
   afterEach(async () => {
     await drain()
     server.resetHandlers()
-    await ctx.db.$client.close()
+    await ctx.db.$close()
   })
   afterAll(() => server.close())
   return ctx

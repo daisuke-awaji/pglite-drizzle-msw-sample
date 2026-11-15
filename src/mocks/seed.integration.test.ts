@@ -41,7 +41,7 @@ describe('利用者がデータを消したあと', () => {
     const before = await counts()
     expect(before.every((n) => n > 0)).toBe(true)
     // サンプルデータのタグを入れるところで失敗させる（メンバーを入れたあと、タスクを入れる前）
-    await ctx.db.$client.exec(`
+    await ctx.db.$exec(`
       create function fail_seed() returns trigger language plpgsql as $$ begin raise exception 'seed failed'; end $$;
       create trigger fail_seed before insert on tags for each row execute function fail_seed();
     `)
