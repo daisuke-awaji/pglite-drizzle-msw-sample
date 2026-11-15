@@ -171,8 +171,8 @@ export function MultiComboboxField({
             <ComboboxValue>
               {(state) =>
                 (state.value as string[]).map((value, index) => (
-                  <ComboboxChip key={value} value={value}>
-                    {state.labels[index]}
+                  <ComboboxChip key={value} value={value} title={state.labels[index]}>
+                    <span className="chip-label">{state.labels[index]}</span>
                     <ComboboxChipRemove aria-label={`${state.labels[index]}を外す`}>
                       <XIcon aria-hidden="true" />
                     </ComboboxChipRemove>

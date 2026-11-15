@@ -31,9 +31,9 @@ export function Component() {
           <ul className="progress-list">
             {d.projects.map((p) => (
               <li key={p.id}>
-                <Link to={`/projects/${p.id}`} className="progress-name">
+                <Link to={`/projects/${p.id}`} className="progress-name" title={p.name}>
                   <ColorDot color={p.color} />
-                  {p.name}
+                  <span className="truncate">{p.name}</span>
                 </Link>
                 <ProgressBar label={`${p.name}の進み具合`} done={p.doneCount} total={p.taskCount} />
                 <span className="muted tabular">
@@ -67,8 +67,12 @@ export function Component() {
                 <li key={t.id}>
                   <DueDate date={t.dueDate} />
                   <div>
-                    <Link to={`/tasks/${t.id}`}>{t.title}</Link>
-                    <p className="muted small">{t.project.name}</p>
+                    <Link to={`/tasks/${t.id}`} className="clamp-2">
+                      {t.title}
+                    </Link>
+                    <p className="muted small truncate" title={t.project.name}>
+                      {t.project.name}
+                    </p>
                   </div>
                   <Assignee member={t.assignee} />
                 </li>

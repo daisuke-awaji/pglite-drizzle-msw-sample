@@ -73,7 +73,7 @@ export function Component() {
               <Link to={`/projects/${p.id}`} className="card project-card" data-archived={p.status === 'archived' ? '' : undefined}>
                 <div className="project-card-head">
                   <ColorDot color={p.color} />
-                  <h2>{p.name}</h2>
+                  <h2 className="clamp-2">{p.name}</h2>
                   {p.status === 'archived' && <span className="badge">アーカイブ</span>}
                 </div>
                 <p className="muted clamp-2">{p.description || '説明はありません'}</p>

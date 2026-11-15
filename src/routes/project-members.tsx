@@ -58,8 +58,12 @@ export function Component() {
           return (
             <span className="transfer-item">
               <MemberAvatar member={m} />
-              <span>{m.name}</span>
-              <span className="muted small">{m.title}</span>
+              <span title={m.name}>{m.name}</span>
+              {m.title && (
+                <span className="muted small" title={m.title}>
+                  {m.title}
+                </span>
+              )}
             </span>
           )
         }}
