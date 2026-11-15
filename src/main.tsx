@@ -1,6 +1,8 @@
+import './agent'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import App from './App'
+import { RouterProvider } from 'react-router/dom'
+import { createRouter } from './router'
 import './index.css'
 
 async function main() {
@@ -10,9 +12,11 @@ async function main() {
     const { startMockApi } = await import('./mocks/browser')
     await startMockApi()
   }
+  // ルーターの loader は作った時点で走り始めるので、モック API の起動を待ってから作る
+  const router = createRouter()
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
-      <App />
+      <RouterProvider router={router} />
     </StrictMode>,
   )
 }
