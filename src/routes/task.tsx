@@ -9,6 +9,7 @@ import { DateField, MultiComboboxField, SelectField, TextareaField, TextField } 
 import { PRIORITIES, PRIORITY_LABEL, STATUS_LABEL, TASK_STATUSES } from '../shared/enums'
 import { commentInput, taskPatch } from '../shared/schemas'
 import type { Comment, TaskDetail } from '../shared/types'
+import { useFocusAfterRemoval } from '../lib/focus-after-removal'
 import { useUnsavedChanges } from '../lib/use-unsaved-changes'
 import { errorsFor, idParam, intentOf, load, run, unknownIntent, validate, type ActionResult } from './lib'
 
@@ -261,10 +262,11 @@ function Comments({ task }: { task: TaskDetail }) {
 
 function CommentItem({ comment }: { comment: Comment }) {
   const fetcher = useFetcher<ActionResult>()
+  const { ref: rowRef, plan: planFocus } = useFocusAfterRemoval<HTMLLIElement>()
   if (fetcher.state !== 'idle') return null
   const author = comment.author?.name ?? '削除されたメンバー'
   return (
-    <li className="comment">
+    <li ref={rowRef} className="comment">
       {comment.author ? <MemberAvatar member={comment.author} /> : <span className="avatar avatar-ghost" aria-hidden="true" />}
       <div className="comment-body">
         <p className="comment-head">
@@ -278,7 +280,11 @@ function CommentItem({ comment }: { comment: Comment }) {
       <Button
         data-variant="ghost"
         aria-label={`${author}のコメント（${new Date(comment.createdAt).toLocaleString('ja-JP')}）を削除`}
-        onClick={() => fetcher.submit({ intent: 'delete-comment', commentId: String(comment.id) }, { method: 'post' })}
+        data-row-focus
+        onClick={() => {
+          planFocus()()
+          void fetcher.submit({ intent: 'delete-comment', commentId: String(comment.id) }, { method: 'post' })
+        }}
       >
         <Trash2Icon aria-hidden="true" />
       </Button>
