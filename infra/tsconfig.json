@@ -1,0 +1,22 @@
+{
+  // CDK のアプリとデプロイのスクリプト。Node 24 が TypeScript をそのまま動かす（型を外すだけ）ので、ビルドしない
+  "compilerOptions": {
+    "target": "es2024",
+    "lib": ["ES2024"],
+    "types": ["node"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": false,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "noEmit": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "skipLibCheck": true
+  },
+  "include": ["bin", "lib", "scripts", "test"]
+}

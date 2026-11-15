@@ -76,6 +76,26 @@ jobs:
       # 本番のサーバー: 接続プール・マイグレーションの実行役・DB の利用者の権限・ビルドした zip（Node 24 で動かす）
       - run: npm run test:server
 
+  # AWS の構成（infra/ の CDK）とデプロイのスクリプト。資格情報なしで、3 つの環境を合成して確かめる（AWS には触らない）
+  infra:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: infra/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      # スタックの決まり（テンプレートの中身）と cdk-nag（AWS Solutions）の指摘、デプロイのスクリプト
+      - run: npm test
+      - name: 3 つの環境を合成する（lookup も資格情報も使わない）
+        run: for env in dev stg prod; do npx cdk synth -c env=$env --quiet --no-lookups; done
+
   # ビルドしたアプリを Chromium で操作する（デスクトップとスマートフォン）
   e2e:
     runs-on: ubuntu-latest
@@ -99,7 +119,7 @@ jobs:
           retention-days: 14
 
   build:
-    needs: [check, integration-postgres, e2e]
+    needs: [check, integration-postgres, infra, e2e]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
