@@ -2,7 +2,7 @@ import { PutParameterCommand } from '@aws-sdk/client-ssm'
 import { context, createClients, getParams, log, main, parseEnv, parseSha, type Clients, type Context } from './lib.ts'
 import { invokeJson, runMigrate } from './migrate.ts'
 import { assertPassed, smokeApi, type Check, type SmokeOptions } from './smoke.ts'
-import { createEndpoint, createRevision, getEndpoint, listEndpointNames, readApiSettings } from './webfn.ts'
+import { createEndpoint, createRevision, getEndpoint, listEndpointNames, readApiSettings, type JwksFetcher } from './webfn.ts'
 
 // 環境ごとに 1 回だけ（docs/production.md「初回の構築」の 5〜7）。何度流しても同じ結果になる。
 //   Network・Data・Api・Migrate のスタックを deploy したあと、Edge より前に流す
@@ -11,14 +11,26 @@ import { createEndpoint, createRevision, getEndpoint, listEndpointNames, readApi
 // 3. 最初の revision を作り、live と next の endpoint を作る（どちらも HomeRegion・IamAuth・自動デプロイなし）
 // 4. endpoint のドメインを SSM に書く（Edge のスタックが live を CloudFront のオリジンにする）
 
-export async function bootstrap({ clients, ctx, sha, smoke = smokeApi }: { clients: Clients; ctx: Context; sha: string; smoke?: (b: string, o: SmokeOptions) => Promise<Check[]> }) {
+export async function bootstrap({
+  clients,
+  ctx,
+  sha,
+  smoke = smokeApi,
+  jwks,
+}: {
+  clients: Clients
+  ctx: Context
+  sha: string
+  smoke?: (b: string, o: SmokeOptions) => Promise<Check[]>
+  jwks?: JwksFetcher
+}) {
   const { 'migrate/bootstrap-function-name': bootstrapFn } = await getParams(clients.ssm, ctx, ['migrate/bootstrap-function-name'])
   const users = await invokeJson(clients, bootstrapFn!, {})
   log('DB の利用者', users)
   await runMigrate({ clients, ctx, mode: 'pre' })
   await runMigrate({ clients, ctx, mode: 'migrate' })
 
-  const settings = await readApiSettings(clients, ctx)
+  const settings = await readApiSettings(clients, ctx, { jwks })
   const existing = new Set(await listEndpointNames(clients, settings.functionName))
   const domains: Record<'live' | 'next', string> = { live: '', next: '' }
   let revisionId: string | undefined

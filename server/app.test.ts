@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { createTestDb, type TestDb } from '../src/test/db'
+import { members } from '../src/db/schema'
+import { HttpError } from '../src/server/core'
 import { createApp } from './app'
+import type { Authenticator } from './auth'
 import type { DbProvider } from './db'
 import { memoryLogger } from './log'
 
@@ -117,5 +120,41 @@ describe('DB につながらないとき', () => {
     const res = await call('/api/readyz')
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ status: 'ok', build: 'abc1234' })
+  })
+})
+
+// 本物の検証は server/auth.test.ts。ここでは「Bearer の値をメールアドレスとみなす」置き換えで、サーバー層へのつなぎ方を確かめる
+const fakeAuthenticator: Authenticator = async (request) => {
+  const email = request.headers.get('authorization')?.replace(/^Bearer /, '')
+  if (!email) throw new HttpError(401, 'ログインが必要です')
+  return { kind: 'principal', principal: { email, admin: false } }
+}
+
+function authApp() {
+  const app = createApp({ db: providerOf(async () => db), log: memoryLogger().logger, buildSha: 'abc1234', authenticate: fakeAuthenticator })
+  return (path: string, email?: string) => app.request(`http://api.test${path}`, { headers: email ? { authorization: `Bearer ${email}` } : {} })
+}
+
+describe('ログイン（Phase 4）', () => {
+  test('トークンがなければ 401。readyz はログインなしで呼べる（デプロイの確認と監視）', async () => {
+    const call = authApp()
+    const res = await call('/api/projects')
+    expect(res.status).toBe(401)
+    expect(await res.json()).toEqual({ error: 'ログインが必要です' })
+    expect((await call('/api/readyz')).status).toBe(200)
+  })
+
+  test('メンバーとして登録されていないメールアドレスは 403', async () => {
+    expect((await authApp()('/api/projects', 'stranger@example.com')).status).toBe(403)
+  })
+
+  test('メンバーは自分のプロジェクトだけが見える。ほかのプロジェクトは 404', async () => {
+    const [member] = await db.select().from(members).limit(1)
+    const call = authApp()
+    const mine = (await (await call('/api/projects', member!.email)).json()) as { id: number }[]
+    const all = (await (await setup().call('/api/projects')).json()) as { id: number }[]
+    expect(mine.length).toBeLessThan(all.length)
+    const hidden = all.find((p) => !mine.some((m) => m.id === p.id))!
+    expect((await call(`/api/projects/${hidden.id}`, member!.email)).status).toBe(404)
   })
 })

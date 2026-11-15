@@ -31,6 +31,8 @@ import { ConfirmDialog } from '../components/confirm'
 import { ErrorView } from '../components/error-view'
 import { ColorDot } from '../components/display'
 import { ThemeMenu } from '../components/theme-menu'
+import { UserMenu } from '../components/user-menu'
+import { USES_AUTH } from '../lib/env'
 import { useOnlineStatus } from '../lib/use-online-status'
 import { usePreferences } from '../stores/preferences'
 import { settle } from './lib'
@@ -234,6 +236,7 @@ function Shell({ children }: { children: ReactNode }) {
           <div className="row topbar-actions">
             <CommandPalette />
             <ThemeMenu />
+            {USES_AUTH && <UserMenu />}
           </div>
         </header>
         {!online && (

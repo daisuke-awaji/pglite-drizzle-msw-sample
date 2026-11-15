@@ -20,10 +20,24 @@ export type ApiSettings = {
   codeBucket: string
   revisionConfig: ServiceConfig
   endpoint: { authType: 'IamAuth'; endpointType: 'HomeRegion'; maxEnvironments: number; canary: boolean }
-  auth: { mode: 'cognito'; userPoolId: string; clientId: string; adminGroup: string } | { mode: 'none' }
+  auth: { mode: 'cognito'; userPoolId: string; clientId: string; adminGroup: string; jwks: string } | { mode: 'none' }
 }
 
-export async function readApiSettings(clients: Clients, ctx: Context): Promise<ApiSettings> {
+export type JwksFetcher = (url: string) => Promise<string>
+
+/** User Pool の署名の鍵（公開鍵）。Web Function はインターネットに出られないので、デプロイの手順が読んで環境変数で渡す */
+export const fetchJwks: JwksFetcher = async (url) => {
+  const res = await fetch(url, { signal: AbortSignal.timeout(10_000) })
+  if (!res.ok) throw new Error(`JWKS を読めません（${res.status}）: ${url}`)
+  const text = await res.text()
+  const keys = (JSON.parse(text) as { keys?: unknown[] }).keys
+  if (!Array.isArray(keys) || keys.length === 0) throw new Error(`JWKS に鍵がありません: ${url}`)
+  return JSON.stringify({ keys })
+}
+
+export const jwksUrl = (region: string, userPoolId: string) => `https://cognito-idp.${region}.amazonaws.com/${userPoolId}/.well-known/jwks.json`
+
+export async function readApiSettings(clients: Clients, ctx: Context, { jwks = fetchJwks }: { jwks?: JwksFetcher } = {}): Promise<ApiSettings> {
   const p = await getParams(
     clients.ssm,
     ctx,
@@ -37,7 +51,16 @@ export async function readApiSettings(clients: Clients, ctx: Context): Promise<A
     codeBucket: p['code-bucket']!,
     revisionConfig: JSON.parse(p['api/revision-config']!) as ServiceConfig,
     endpoint,
-    auth: p['auth/user-pool-id'] && p['auth/client-id'] ? { mode: 'cognito', userPoolId: p['auth/user-pool-id'], clientId: p['auth/client-id'], adminGroup: p['auth/admin-group'] ?? 'admin' } : { mode: 'none' },
+    auth:
+      p['auth/user-pool-id'] && p['auth/client-id']
+        ? {
+            mode: 'cognito',
+            userPoolId: p['auth/user-pool-id'],
+            clientId: p['auth/client-id'],
+            adminGroup: p['auth/admin-group'] ?? 'admin',
+            jwks: await jwks(jwksUrl(ctx.region, p['auth/user-pool-id'])),
+          }
+        : { mode: 'none' },
   }
 }
 
@@ -48,7 +71,13 @@ export async function readApiSettings(clients: Clients, ctx: Context): Promise<A
 export function serviceConfigFor(settings: ApiSettings, sha: string): ServiceConfig {
   const auth: Record<string, string> =
     settings.auth.mode === 'cognito'
-      ? { AUTH_MODE: 'cognito', COGNITO_USER_POOL_ID: settings.auth.userPoolId, COGNITO_CLIENT_ID: settings.auth.clientId, COGNITO_ADMIN_GROUP: settings.auth.adminGroup }
+      ? {
+          AUTH_MODE: 'cognito',
+          COGNITO_USER_POOL_ID: settings.auth.userPoolId,
+          COGNITO_CLIENT_ID: settings.auth.clientId,
+          COGNITO_ADMIN_GROUP: settings.auth.adminGroup,
+          COGNITO_JWKS: settings.auth.jwks,
+        }
       : { AUTH_MODE: 'none' }
   return {
     ...settings.revisionConfig,

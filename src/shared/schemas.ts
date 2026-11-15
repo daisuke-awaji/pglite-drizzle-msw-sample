@@ -116,10 +116,10 @@ export const taskInput = z.object({
 
 export const taskPatch = z.object(taskFields).partial()
 
-export const commentInput = z.object({
-  body: required('コメント', 1000),
-  authorId: id,
-})
+export const commentBody = z.object({ body: required('コメント', 1000) })
+
+/** 投稿者を選んで書く（プロトタイプ）。ログインしているときは本文だけ（投稿者はログイン中の利用者） */
+export const commentInput = commentBody.extend({ authorId: id })
 
 export const tagInput = z.object({ name: required('タグ名', 30) })
 

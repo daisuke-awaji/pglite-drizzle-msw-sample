@@ -5,7 +5,8 @@ import { getEndpoint, mainRevision, readApiSettings, setWeights } from './webfn.
 // live を next にある revision（1 つ前）に 100% で向け、next には戻す前の live を残す（調べられるように。もう一度流すと元に戻る）
 
 export async function rollback({ clients, ctx }: { clients: Clients; ctx: Context }) {
-  const settings = await readApiSettings(clients, ctx)
+  // 戻すだけなので鍵は読まない（revision の設定は作り直さない）
+  const settings = await readApiSettings(clients, ctx, { jwks: async () => '' })
   const live = await getEndpoint(clients, settings.functionName, 'live')
   const next = await getEndpoint(clients, settings.functionName, 'next')
   const from = mainRevision(live.revisionWeights)

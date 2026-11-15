@@ -27,6 +27,11 @@ async function main() {
     const { startMockApi } = await import('./mocks/browser')
     await startMockApi()
   }
+  // ログインするビルド（AWS）では、画面を作る前にログインを済ませる（ログインの画面へ移るときは何も描かない）
+  if (import.meta.env.VITE_AUTH_MODE === 'cognito') {
+    const { ensureSession } = await import('./auth/session')
+    if (!(await ensureSession())) return
+  }
   // ルーターの loader は作った時点で走り始めるので、モック API の起動を待ってから作る
   const router = createRouter()
   createRoot(root, {

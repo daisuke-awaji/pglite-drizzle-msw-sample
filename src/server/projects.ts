@@ -2,6 +2,7 @@ import { and, asc, desc, eq, ilike, inArray, notInArray, sql, type SQL } from 'd
 import { members, projectMembers, projects, tasks } from '../db/schema'
 import { projectInput, projectListQuery, projectMembersInput, projectPatch } from '../shared/schemas'
 import type { Member, ProjectDetail, ProjectListItem } from '../shared/types'
+import { ALL, type Access, assertProjectAccess, requireMember, visibleProjects } from './access'
 import { containsPattern, type Db, HttpError, iso, notFound, parse } from './core'
 
 // 注意: 1 つの表だけを select するとき、Drizzle は列名を表名なしで出力する（"id" など）。
@@ -36,11 +37,13 @@ async function membersByProject(db: Db, projectIds: number[]) {
   return byProject
 }
 
-export async function listProjects(db: Db, rawQuery: unknown = {}): Promise<ProjectListItem[]> {
+export async function listProjects(db: Db, rawQuery: unknown = {}, access: Access = ALL): Promise<ProjectListItem[]> {
   const filter = projectListQuery.parse(rawQuery)
   const rows = await selectProjects(
     db,
     and(
+      // 自分がメンバーのプロジェクトだけ（ALL なら全部）
+      visibleProjects(db, access),
       filter.q ? ilike(projects.name, containsPattern(filter.q)) : undefined,
       filter.status ? eq(projects.status, filter.status) : undefined,
     ),
@@ -54,8 +57,8 @@ export async function listProjects(db: Db, rawQuery: unknown = {}): Promise<Proj
   }))
 }
 
-export async function getProject(db: Db, id: number): Promise<ProjectDetail> {
-  const [row] = await selectProjects(db, eq(projects.id, id))
+export async function getProject(db: Db, id: number, access: Access = ALL): Promise<ProjectDetail> {
+  const [row] = await selectProjects(db, and(eq(projects.id, id), visibleProjects(db, access)))
   if (!row) throw notFound('プロジェクト', id)
   const membersOf = await membersByProject(db, [id])
   return {
@@ -68,22 +71,30 @@ export async function getProject(db: Db, id: number): Promise<ProjectDetail> {
   }
 }
 
-export async function createProject(db: Db, body: unknown): Promise<ProjectDetail> {
+// ログインした人が作ったプロジェクトには、作った人をメンバーとして入れる（入れないと自分で見えなくなる）
+export async function createProject(db: Db, body: unknown, access: Access = ALL): Promise<ProjectDetail> {
   const input = parse(projectInput, body)
-  const [row] = await db.insert(projects).values(input).returning({ id: projects.id })
-  return getProject(db, row!.id)
+  const creator = requireMember(access)
+  const id = await db.transaction(async (tx) => {
+    const [row] = await tx.insert(projects).values(input).returning({ id: projects.id })
+    if (creator !== undefined) await tx.insert(projectMembers).values({ projectId: row!.id, memberId: creator })
+    return row!.id
+  })
+  return getProject(db, id, access)
 }
 
-export async function updateProject(db: Db, id: number, body: unknown): Promise<ProjectDetail> {
+export async function updateProject(db: Db, id: number, body: unknown, access: Access = ALL): Promise<ProjectDetail> {
   const input = parse(projectPatch, body)
   if (Object.keys(input).length === 0) throw new HttpError(400, '更新する項目がありません')
+  await assertProjectAccess(db, id, access)
   const updated = await db.update(projects).set(input).where(eq(projects.id, id)).returning({ id: projects.id })
   if (updated.length === 0) throw notFound('プロジェクト', id)
-  return getProject(db, id)
+  return getProject(db, id, access)
 }
 
 // タスク・タスクのタグ・コメント・所属はすべて CASCADE で一緒に消える
-export async function deleteProject(db: Db, id: number): Promise<void> {
+export async function deleteProject(db: Db, id: number, access: Access = ALL): Promise<void> {
+  await assertProjectAccess(db, id, access)
   const deleted = await db.delete(projects).where(eq(projects.id, id)).returning({ id: projects.id })
   if (deleted.length === 0) throw notFound('プロジェクト', id)
 }
@@ -93,6 +104,7 @@ export async function setProjectMembers(
   db: Db,
   id: number,
   body: unknown,
+  access: Access = ALL,
 ): Promise<{ project: ProjectDetail; unassignedTaskCount: number }> {
   const { memberIds } = parse(projectMembersInput, body)
   const ids = [...new Set(memberIds)]
@@ -100,6 +112,13 @@ export async function setProjectMembers(
   const unassignedTaskCount = await db.transaction(async (tx) => {
     const [project] = await tx.select({ id: projects.id }).from(projects).where(eq(projects.id, id))
     if (!project) throw notFound('プロジェクト', id)
+    await assertProjectAccess(tx, id, access)
+    // 自分を外すと、自分ではもう戻せなくなる（プロジェクトが見えなくなる）
+    if (access.kind === 'user' && access.memberId !== null && !ids.includes(access.memberId)) {
+      throw new HttpError(400, '自分をプロジェクトのメンバーから外すことはできません', {
+        memberIds: ['自分をプロジェクトのメンバーから外すことはできません'],
+      })
+    }
 
     if (ids.length > 0) {
       const found = await tx.select({ id: members.id }).from(members).where(inArray(members.id, ids))
@@ -129,5 +148,5 @@ export async function setProjectMembers(
     return unassigned.length
   })
 
-  return { project: await getProject(db, id), unassignedTaskCount }
+  return { project: await getProject(db, id, access), unassignedTaskCount }
 }

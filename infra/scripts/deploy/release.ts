@@ -1,7 +1,7 @@
 import { DescribeAlarmsCommand, GetMetricDataCommand } from '@aws-sdk/client-cloudwatch'
 import { context, createClients, getParams, log, main, parseEnv, parseSha, sleep, type Clients, type Context } from './lib.ts'
 import { assertPassed, smokeApi, type Check, type SmokeOptions } from './smoke.ts'
-import { createRevision, getEndpoint, mainRevision, readApiSettings, setWeights } from './webfn.ts'
+import { createRevision, getEndpoint, mainRevision, readApiSettings, setWeights, type JwksFetcher } from './webfn.ts'
 
 // いつものリリース（docs/production.md の 5・6）:
 //   1. api/<SHA>.zip から revision を作る → 2. next に向けてスモークテスト（署名つき）
@@ -16,6 +16,7 @@ export type ReleaseOptions = {
   canary?: { percent: number; minutes: number; pollSeconds: number }
   wait?: typeof sleep
   now?: () => number
+  jwks?: JwksFetcher
 }
 
 export type ReleaseResult = { ok: true; previous?: string; current: string; canary: boolean }
@@ -39,8 +40,8 @@ async function canaryProblem(clients: Clients, ctx: Context, sha: string, since:
   return errors > 0 ? `新しいビルド（${sha}）の 5xx が ${errors} 件` : undefined
 }
 
-export async function release({ clients, ctx, sha, smoke = smokeApi, canary = { percent: 10, minutes: 10, pollSeconds: 30 }, wait = sleep, now = Date.now }: ReleaseOptions): Promise<ReleaseResult> {
-  const settings = await readApiSettings(clients, ctx)
+export async function release({ clients, ctx, sha, smoke = smokeApi, canary = { percent: 10, minutes: 10, pollSeconds: 30 }, wait = sleep, now = Date.now, jwks }: ReleaseOptions): Promise<ReleaseResult> {
+  const settings = await readApiSettings(clients, ctx, { jwks })
   const live = await getEndpoint(clients, settings.functionName, 'live')
   const previous = mainRevision(live.revisionWeights)
   const next = await getEndpoint(clients, settings.functionName, 'next')

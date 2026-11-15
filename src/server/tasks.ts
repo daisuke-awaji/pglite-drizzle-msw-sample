@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, ilike, inArray, isNull, sql, type SQL } from 'drizzle-orm'
 import { comments, members, projectMembers, projects, tags, tasks, taskTags } from '../db/schema'
 import {
+  commentBody,
   commentInput,
   taskInput,
   taskListQuery,
@@ -8,6 +9,7 @@ import {
   type TaskListQuery,
 } from '../shared/schemas'
 import type { Comment, Page, Tag, TaskDetail, TaskListItem } from '../shared/types'
+import { ALL, type Access, assertProjectAccess, assertTaskAccess, canSeeProject, forbidden, requireMember } from './access'
 import { containsPattern, type Db, HttpError, iso, notFound, parse } from './core'
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
@@ -34,10 +36,11 @@ async function tagsByTask(db: Db | Tx, taskIds: number[]) {
   return byTask
 }
 
-export async function listTasks(db: Db, projectId: number, rawQuery: unknown): Promise<Page<TaskListItem>> {
+export async function listTasks(db: Db, projectId: number, rawQuery: unknown, access: Access = ALL): Promise<Page<TaskListItem>> {
   const query = taskListQuery.parse(rawQuery)
   // 存在しないプロジェクトは「0 件」ではなく 404 にする（URL の打ち間違いや削除済みに気づけるように）
   if ((await db.$count(projects, eq(projects.id, projectId))) === 0) throw notFound('プロジェクト', projectId)
+  await assertProjectAccess(db, projectId, access)
   const where = and(
     eq(tasks.projectId, projectId),
     query.status ? eq(tasks.status, query.status) : undefined,
@@ -94,7 +97,8 @@ export async function listTasks(db: Db, projectId: number, rawQuery: unknown): P
 }
 
 // 関連をたどる取得は Drizzle のリレーショナルクエリ（db.query + with）で 1 回に書ける
-export async function getTask(db: Db, id: number): Promise<TaskDetail> {
+export async function getTask(db: Db, id: number, access: Access = ALL): Promise<TaskDetail> {
+  if (access.kind === 'user') await assertTaskAccess(db, id, access)
   const task = await db.query.tasks.findFirst({
     where: eq(tasks.id, id),
     with: {
@@ -169,39 +173,41 @@ async function replaceTags(tx: Tx, taskId: number, tagIds: number[]) {
 const touchProject = (tx: Tx, projectId: number) =>
   tx.update(projects).set({ updatedAt: new Date() }).where(eq(projects.id, projectId))
 
-export async function createTask(db: Db, projectId: number, body: unknown): Promise<TaskDetail> {
+export async function createTask(db: Db, projectId: number, body: unknown, access: Access = ALL): Promise<TaskDetail> {
   const { tagIds, ...input } = parse(taskInput, body)
   const id = await db.transaction(async (tx) => {
     const [project] = await tx.select({ id: projects.id }).from(projects).where(eq(projects.id, projectId))
     if (!project) throw notFound('プロジェクト', projectId)
+    await assertProjectAccess(tx, projectId, access)
     await assertAssignable(tx, projectId, input.assigneeId)
     const [row] = await tx.insert(tasks).values({ ...input, projectId }).returning({ id: tasks.id })
     await replaceTags(tx, row!.id, tagIds)
     await touchProject(tx, projectId)
     return row!.id
   })
-  return getTask(db, id)
+  return getTask(db, id, access)
 }
 
-export async function updateTask(db: Db, id: number, body: unknown): Promise<TaskDetail> {
+export async function updateTask(db: Db, id: number, body: unknown, access: Access = ALL): Promise<TaskDetail> {
   const { tagIds, ...input } = parse(taskPatch, body)
   if (Object.keys(input).length === 0 && tagIds === undefined) {
     throw new HttpError(400, '更新する項目がありません')
   }
   await db.transaction(async (tx) => {
     const [task] = await tx.select({ projectId: tasks.projectId }).from(tasks).where(eq(tasks.id, id))
-    if (!task) throw notFound('タスク', id)
+    if (!task || !(await canSeeProject(tx, task.projectId, access))) throw notFound('タスク', id)
     await assertAssignable(tx, task.projectId, input.assigneeId)
     // タグだけを変えたときも更新日時を進める
     await tx.update(tasks).set({ ...input, updatedAt: new Date() }).where(eq(tasks.id, id))
     if (tagIds !== undefined) await replaceTags(tx, id, tagIds)
     await touchProject(tx, task.projectId)
   })
-  return getTask(db, id)
+  return getTask(db, id, access)
 }
 
-export async function deleteTask(db: Db, id: number): Promise<void> {
+export async function deleteTask(db: Db, id: number, access: Access = ALL): Promise<void> {
   await db.transaction(async (tx) => {
+    if (access.kind === 'user') await assertTaskAccess(tx, id, access)
     const [deleted] = await tx.delete(tasks).where(eq(tasks.id, id)).returning({ projectId: tasks.projectId })
     if (!deleted) throw notFound('タスク', id)
     await touchProject(tx, deleted.projectId)
@@ -209,12 +215,13 @@ export async function deleteTask(db: Db, id: number): Promise<void> {
 }
 
 // 投稿者は、そのタスクのプロジェクトのメンバーに限る（担当者と同じ業務ルール）。
-// 認証を入れたら、投稿者はクライアントから受け取らず、ログイン中の利用者にすること
-export async function addComment(db: Db, taskId: number, body: unknown): Promise<Comment> {
-  const input = parse(commentInput, body)
+// ログインしているときは、投稿者をクライアントから受け取らず、ログイン中の利用者にする
+export async function addComment(db: Db, taskId: number, body: unknown, access: Access = ALL): Promise<Comment> {
+  const me = requireMember(access)
+  const input = me === undefined ? parse(commentInput, body) : { ...parse(commentBody, body), authorId: me }
   return db.transaction(async (tx) => {
     const [task] = await tx.select({ projectId: tasks.projectId }).from(tasks).where(eq(tasks.id, taskId))
-    if (!task) throw notFound('タスク', taskId)
+    if (!task || !(await canSeeProject(tx, task.projectId, access))) throw notFound('タスク', taskId)
     const [author] = await tx
       .select({ id: members.id, name: members.name })
       .from(projectMembers)
@@ -230,7 +237,17 @@ export async function addComment(db: Db, taskId: number, body: unknown): Promise
   })
 }
 
-export async function deleteComment(db: Db, id: number): Promise<void> {
+// ログインしているときは、自分のコメントだけを消せる（投稿者が削除されたコメントは、プロジェクトのメンバーなら消せる）。管理者は消せる
+export async function deleteComment(db: Db, id: number, access: Access = ALL): Promise<void> {
+  if (access.kind === 'user') {
+    const [comment] = await db
+      .select({ authorId: comments.authorId, projectId: tasks.projectId })
+      .from(comments)
+      .innerJoin(tasks, eq(tasks.id, comments.taskId))
+      .where(eq(comments.id, id))
+    if (!comment || !(await canSeeProject(db, comment.projectId, access))) throw notFound('コメント', id)
+    if (comment.authorId !== null && comment.authorId !== access.memberId && !access.admin) throw forbidden('ほかの人のコメントは消せません')
+  }
   const deleted = await db.delete(comments).where(eq(comments.id, id)).returning({ id: comments.id })
   if (deleted.length === 0) throw notFound('コメント', id)
 }

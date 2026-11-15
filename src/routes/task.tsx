@@ -2,6 +2,7 @@ import { Button } from '@ui-sdk/react/button'
 import { Trash2Icon } from 'lucide-react'
 import { useState } from 'react'
 import { Link, redirect, useFetcher, useLoaderData, type Params } from 'react-router'
+import { USES_AUTH } from '../lib/env'
 import { api } from '../api/client'
 import { confirmDanger } from '../components/confirm-danger'
 import { ColorDot, DateTime, MemberAvatar } from '../components/display'
@@ -249,7 +250,8 @@ function Comments({ task }: { task: TaskDetail }) {
           <input type="hidden" name="intent" value="comment" />
           <TextareaField label="コメント" name="body" required errors={errors.body} rows={3} />
           <div className="comment-form-foot">
-            <SelectField label="投稿者" name="authorId" items={authors} defaultValue={authors[0]!.value} errors={errors.authorId} />
+            {/* ログインしているときは、投稿者はログイン中の利用者（サーバーが決める） */}
+            {!USES_AUTH && <SelectField label="投稿者" name="authorId" items={authors} defaultValue={authors[0]!.value} errors={errors.authorId} />}
             <Button type="submit" data-variant="solid" disabled={fetcher.state !== 'idle'} focusableWhenDisabled>
               コメントする
             </Button>
