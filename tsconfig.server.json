@@ -1,0 +1,25 @@
+{
+  // 本番のサーバー（server/）と、そのビルド・デプロイのスクリプト。Node 24 で動かす（esbuild で 1 ファイルにまとめる）
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.server.tsbuildinfo",
+    "target": "es2024",
+    "lib": ["ES2024"],
+    "types": ["node"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "skipLibCheck": true,
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["server"]
+}

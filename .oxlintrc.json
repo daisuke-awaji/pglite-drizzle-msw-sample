@@ -100,6 +100,7 @@
     "coverage",
     "playwright-report",
     "test-results",
-    "public/mockServiceWorker.js"
+    "public/mockServiceWorker.js",
+    "dist-server"
   ]
 }
