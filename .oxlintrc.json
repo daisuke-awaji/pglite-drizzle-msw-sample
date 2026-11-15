@@ -101,6 +101,18 @@
     "playwright-report",
     "test-results",
     "public/mockServiceWorker.js",
-    "dist-server"
+    "dist-server",
+    "infra/cdk.out",
+    "infra/node_modules"
+  ],
+  "overrides": [
+    {
+      "files": [
+        "infra/**"
+      ],
+      "rules": {
+        "no-new": "off"
+      }
+    }
   ]
 }
