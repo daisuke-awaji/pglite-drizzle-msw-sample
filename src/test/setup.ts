@@ -1,3 +1,5 @@
+// expect に toBeInTheDocument などを足す（副作用だけの import）
+// oxlint-disable-next-line import/no-unassigned-import
 import '@testing-library/jest-dom/vitest'
 import { cleanup } from '@testing-library/react'
 import { afterEach, beforeEach } from 'vitest'
