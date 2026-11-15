@@ -16,16 +16,16 @@ export function setupTestApi() {
 
   // 処理中のリクエストを数える。テストの最後に画面を外しても、送信済みのリクエストは走り続けるので、
   // 終わるのを待ってから DB を閉じる（待たないと、次のテストで「閉じた DB への問い合わせ」が失敗して見える）
-  let inFlight = 0
+  const inFlight = { count: 0 }
   server.events.on('request:start', () => {
-    inFlight++
+    inFlight.count++
   })
   server.events.on('request:end', () => {
-    inFlight--
+    inFlight.count--
   })
   async function drain(timeout = 5000) {
     const until = Date.now() + timeout
-    while (inFlight > 0 && Date.now() < until) await new Promise((r) => setTimeout(r, 10))
+    while (inFlight.count > 0 && Date.now() < until) await new Promise((r) => setTimeout(r, 10))
   }
 
   beforeAll(() => server.listen({ onUnhandledFrame: 'error' }))

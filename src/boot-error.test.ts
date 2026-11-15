@@ -19,19 +19,20 @@ describe('起動に失敗した理由の説明', () => {
   })
 })
 
+function render() {
+  allowConsole(/\[boot\]/)
+  const root = document.createElement('div')
+  document.body.append(root)
+  renderBootError(root, new Error('wasm の読み込みに失敗'))
+  return root
+}
+
 describe('起動に失敗したときの画面', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
     document.body.replaceChildren()
   })
 
-  function render() {
-    allowConsole(/\[boot\]/)
-    const root = document.createElement('div')
-    document.body.append(root)
-    renderBootError(root, new Error('wasm の読み込みに失敗'))
-    return root
-  }
 
   test('見出しにフォーカスを移し、理由・対処・技術的な詳細を出す', () => {
     const root = render()
