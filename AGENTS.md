@@ -8,6 +8,8 @@
 - 入力の形は `src/shared/schemas.ts` の Zod スキーマに一本化する（サーバー層と `action` の両方で使う）。
 - 端末ごとの設定は `src/stores/preferences.ts`、下書きは `src/stores/drafts.ts`、絞り込みなどは URL に置く。
 - スキーマを変えたら `npm run db:generate -- --name <変更内容>` で `drizzle/` に SQL を追加する。
+  生成された SQL を読み、`npm run check:migrations` を通す。`main` に入ったマイグレーションは書き換えない（直すときは新しいマイグレーションを足す）。
+  列の削除・名前や型の変更は 1 回のリリースでしない（「足す → 移す → 切り替える → 消す」。`docs/production.md` の「マイグレーション」）。
 - 表には `table-stack` クラスと各セルの `data-label` を付ける（スマートフォンでカードになる）。アイコンだけのボタンには `aria-label` を付ける。
 - テスト: DB を使うものは `*.integration.test.ts(x)`、それ以外は `*.test.ts(x)`、ブラウザでしか分からないことは `e2e/`。
   エンドポイントを足したら `src/api/api.integration.test.ts` に、画面を足したら `src/routes/app.integration.test.tsx` と `e2e/pages.spec.ts` にケースを足す。

@@ -19,7 +19,7 @@ export default mergeConfig(
           test: {
             name: 'unit',
             environment: 'jsdom',
-            include: ['src/**/*.test.{ts,tsx}'],
+            include: ['src/**/*.test.{ts,tsx}', 'scripts/**/*.test.mjs'],
             exclude: ['src/**/*.integration.test.{ts,tsx}'],
           },
         },
