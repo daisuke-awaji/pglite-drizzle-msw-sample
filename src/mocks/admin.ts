@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm'
 import type { DbInfo } from '../shared/types'
-import type { Db } from './core'
+import type { Db } from '../server/core'
 
 const TABLES = ['members', 'projects', 'project_members', 'tasks', 'tags', 'task_tags', 'comments'] as const
 

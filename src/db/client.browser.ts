@@ -1,6 +1,5 @@
 import { PGlite } from '@electric-sql/pglite'
 import { drizzle } from 'drizzle-orm/pglite'
-import { isEmpty, seed } from '../server/seed'
 import { migrate } from './migrate.browser'
 import * as schema from './schema'
 
@@ -14,11 +13,11 @@ let dbPromise: Promise<BrowserDb> | undefined
 
 export type BrowserDb = Awaited<ReturnType<typeof createDb>>
 
+// マイグレーションまでを行う。サンプルデータを入れるのはモック API の役目（src/mocks/browser.ts）
 async function createDb() {
   const client = await PGlite.create(DATA_DIR)
   const db = drizzle({ client, schema })
   await migrate(db)
-  if (await isEmpty(db)) await seed(db)
   return db
 }
 

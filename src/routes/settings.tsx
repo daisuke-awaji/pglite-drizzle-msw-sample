@@ -13,10 +13,11 @@ import { SegmentedControl, SegmentedControlIndicator, SegmentedControlItem } fro
 import { Switch, SwitchThumb } from '@ui-sdk/react/switch'
 import { PlusIcon, XIcon } from 'lucide-react'
 import { useFetcher, useLoaderData, useRevalidator } from 'react-router'
-import { api } from '../api/client'
+import { api, devApi } from '../api/client'
 import { PageHeader } from '../components/display'
 import { InlineError } from '../components/error-view'
 import { SelectField, TextField } from '../components/fields'
+import { USES_MOCK_API } from '../lib/env'
 import { tagInput } from '../shared/schemas'
 import type { DbInfo, TagListItem } from '../shared/types'
 import { usePreferences, type Fault, type Latency, type Theme } from '../stores/preferences'
@@ -27,7 +28,11 @@ export const handle = { crumb: () => '設定' }
 // 設定画面は「障害シミュレーションを止める」場所でもあるので、API が失敗しても画面全体はエラーにしない。
 // 読めなかった部分だけをその場でエラー表示にする
 export async function loader({ request }: { request: Request }) {
-  const [tags, db] = await Promise.all([settle(api.listTags(request.signal)), settle(api.dbInfo(request.signal))])
+  const [tags, db] = await Promise.all([
+    settle(api.listTags(request.signal)),
+    // ブラウザ内 DB の状態はモック API にしかない
+    USES_MOCK_API ? settle(devApi.dbInfo(request.signal)) : undefined,
+  ])
   return { tags, db }
 }
 
@@ -43,7 +48,8 @@ export async function action({ request }: { request: Request }) {
     case 'delete-tag':
       return run(intent, () => api.deleteTag(Number(form.get('id'))), 'タグを削除しました')
     case 'reset':
-      return run(intent, () => api.reset(), 'サンプルデータに戻しました')
+      if (!USES_MOCK_API) return unknownIntent(intent)
+      return run(intent, () => devApi.reset(), 'サンプルデータに戻しました')
     default:
       return unknownIntent(intent)
   }
@@ -69,7 +75,7 @@ export function Component() {
       <div className="settings-grid">
         <Preferences />
         <Tags />
-        <Storage />
+        {USES_MOCK_API && <Storage />}
       </div>
     </div>
   )
@@ -96,22 +102,27 @@ function Preferences() {
         </Switch>
         <FieldLabel>サイドバーを折りたたむ</FieldLabel>
       </Field>
-      <SelectField
-        label="API の遅延"
-        name="latency"
-        items={latencyItems}
-        value={String(latency)}
-        onValueChange={(v) => v && setLatency(Number(v) as Latency)}
-        description="モック API の応答を遅らせて、読み込み中の表示や楽観的更新を確かめます"
-      />
-      <SelectField
-        label="障害シミュレーション"
-        name="fault"
-        items={faultItems}
-        value={fault}
-        onValueChange={(v) => v && setFault(v as Fault)}
-        description="エラー表示と再試行を確かめます。この設定は保存されず、ページを読み込み直すと「なし」に戻ります"
-      />
+      {/* モック API の挙動を変える設定。本番の API には効かないので出さない */}
+      {USES_MOCK_API && (
+        <>
+          <SelectField
+            label="API の遅延"
+            name="latency"
+            items={latencyItems}
+            value={String(latency)}
+            onValueChange={(v) => v && setLatency(Number(v) as Latency)}
+            description="モック API の応答を遅らせて、読み込み中の表示や楽観的更新を確かめます"
+          />
+          <SelectField
+            label="障害シミュレーション"
+            name="fault"
+            items={faultItems}
+            value={fault}
+            onValueChange={(v) => v && setFault(v as Fault)}
+            description="エラー表示と再試行を確かめます。この設定は保存されず、ページを読み込み直すと「なし」に戻ります"
+          />
+        </>
+      )}
     </section>
   )
 }
@@ -181,6 +192,7 @@ const STORAGES = [
 
 function Storage() {
   const { db: result } = useLoaderData<typeof loader>()
+  if (!result) return null
   return (
     <section className="card form span-2">
       <h2>データの保存先</h2>

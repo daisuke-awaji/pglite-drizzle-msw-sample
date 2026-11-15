@@ -5,7 +5,7 @@ import { usePreferences } from '../stores/preferences'
 import { setupTestApi } from '../test/api'
 import { allowConsole } from '../test/console'
 import { TEST_TODAY } from '../test/db'
-import { api, ApiError } from './client'
+import { api, ApiError, devApi } from './client'
 
 // API クライアント → MSW ハンドラー → src/server → PGlite を本物のままつないで確かめる。
 // 最後のテストで「すべてのハンドラーにケースがあるか」を確かめるので、エンドポイントを足したらここにも足す
@@ -19,6 +19,10 @@ function endpoint(name: string, fn: () => Promise<void>) {
 }
 
 const raw = (path: string, init?: RequestInit) => fetch(new URL(`${API_BASE}${path}`, location.origin), init)
+const sendJson = (method: string) => (path: string, body: unknown) =>
+  raw(path, { method, body: JSON.stringify(body), headers: { 'content-type': 'application/json' } })
+const post = sendJson('POST')
+const patch = sendJson('PATCH')
 
 async function apiError(promise: Promise<unknown>): Promise<ApiError> {
   const e = await promise.then(
@@ -122,6 +126,13 @@ describe('エンドポイント', () => {
     expect(c).toMatchObject({ body: 'こんにちは', author: { id: 1 } })
     expect(await apiError(api.addComment(task.id, { body: '', authorId: 1 }))).toMatchObject({ status: 400 })
     expect(await apiError(api.addComment(9999, { body: 'x', authorId: 1 }))).toMatchObject({ status: 404 })
+    // 投稿者はプロジェクトのメンバーに限る（担当者と同じ業務ルール）
+    const projectMemberIds = new Set((await api.getTask(task.id)).project.members.map((m) => m.id))
+    const outsider = (await api.listMembers()).find((m) => !projectMemberIds.has(m.id))!
+    expect(await apiError(api.addComment(task.id, { body: 'x', authorId: outsider.id }))).toMatchObject({
+      status: 400,
+      fieldErrors: { authorId: [expect.stringMatching(/プロジェクトのメンバー/)] },
+    })
   })
 
   endpoint('DELETE /comments/:id', async () => {
@@ -178,7 +189,7 @@ describe('エンドポイント', () => {
   })
 
   endpoint('GET /_debug', async () => {
-    const info = await api.dbInfo()
+    const info = await devApi.dbInfo()
     expect(info.version).toMatch(/PostgreSQL/)
     expect(info.migrations.length).toBeGreaterThan(0)
     expect(info.rows.tasks).toBe(24)
@@ -186,7 +197,7 @@ describe('エンドポイント', () => {
 
   endpoint('POST /_reset', async () => {
     await api.deleteProject((await firstProject()).id)
-    await api.reset()
+    await devApi.reset()
     expect(await api.listProjects()).toHaveLength(4)
   })
 })
@@ -246,6 +257,59 @@ describe('HTTP としての振る舞い', () => {
   })
 })
 
+// 利用者が送れる値で 500 にならないこと（500 は「再試行」が出るが、何度やっても失敗して行き止まりになる）
+describe('おかしな入力は 400 にし、500 にしない', () => {
+  test('int4 を超える ID（パス・本文）', async () => {
+    const p = await firstProject()
+    expect((await raw('/tasks/99999999999')).status).toBe(400)
+    expect((await raw('/projects/2147483648')).status).toBe(400)
+    expect((await raw('/projects/2147483647')).status).toBe(404)
+    expect((await post(`/projects/${p.id}/tasks`, { title: 'x', assigneeId: 3_000_000_000 })).status).toBe(400)
+    expect((await post(`/projects/${p.id}/tasks`, { title: 'x', tagIds: [3_000_000_000] })).status).toBe(400)
+  })
+
+  test('ID に数値以外（true・配列・指数表記）を送る', async () => {
+    const task = await firstTask()
+    for (const authorId of [true, [1], ' 1e0 ', '1.0', -1, 0]) {
+      expect((await post(`/tasks/${task.id}/comments`, { body: 'x', authorId })).status, String(authorId)).toBe(400)
+    }
+    // 数字だけの文字列は受け付ける（FormData から来る値）
+    expect((await post(`/tasks/${task.id}/comments`, { body: 'x', authorId: '1' })).status).toBe(201)
+  })
+
+  test('更新する項目のないメンバーの更新', async () => {
+    const res = await patch('/members/1', {})
+    expect(res.status).toBe(400)
+    expect(await res.json()).toMatchObject({ error: '更新する項目がありません' })
+  })
+
+  test('PostgreSQL が受け付けない日付（0 年）と 1900 年より前', async () => {
+    const p = await firstProject()
+    for (const dueDate of ['0000-01-01', '1899-12-31']) {
+      const res = await post(`/projects/${p.id}/tasks`, { title: 'x', dueDate })
+      expect(res.status, dueDate).toBe(400)
+      expect(await res.json()).toMatchObject({ fieldErrors: { dueDate: [expect.stringMatching(/1900 年以降/)] } })
+    }
+    expect((await post(`/projects/${p.id}/tasks`, { title: 'x', dueDate: '1900-01-01' })).status).toBe(201)
+  })
+
+  test('NUL 文字を含む文字列', async () => {
+    const p = await firstProject()
+    expect((await post(`/projects/${p.id}/tasks`, { title: 'a\u0000b' })).status).toBe(400)
+    expect((await post('/members', { name: 'a\u0000b', email: 'nul@example.com' })).status).toBe(400)
+    expect((await post('/tags', { name: '\u0000' })).status).toBe(400)
+    // 検索語の NUL は取り除いて探す（クエリはエラーにしない決まり）
+    expect((await raw(`/projects/${p.id}/tasks?q=${encodeURIComponent('a\u0000')}`)).status).toBe(200)
+    expect((await raw(`/projects?q=${encodeURIComponent('\u0000')}`)).status).toBe(200)
+  })
+
+  test('ダッシュボードの today がおかしければ、サーバーの今日で数える', async () => {
+    for (const today of ['abc', '0000-01-01', '2026-13-40']) {
+      expect((await raw(`/dashboard?today=${today}`)).status, today).toBe(200)
+    }
+  })
+})
+
 describe('障害シミュレーション（設定画面）', () => {
   test('保存だけ失敗させる', async () => {
     usePreferences.getState().setFault('error-writes')
@@ -256,8 +320,8 @@ describe('障害シミュレーション（設定画面）', () => {
   test('すべて失敗させる（_debug と _reset は対象外なので、設定画面から戻せる）', async () => {
     usePreferences.getState().setFault('error-all')
     expect(await apiError(api.listMembers())).toMatchObject({ status: 503 })
-    await expect(api.dbInfo()).resolves.toMatchObject({ rows: expect.any(Object) })
-    await expect(api.reset()).resolves.toBeUndefined()
+    await expect(devApi.dbInfo()).resolves.toMatchObject({ rows: expect.any(Object) })
+    await expect(devApi.reset()).resolves.toBeUndefined()
   })
 
   test('ネットワークにつながらない', async () => {

@@ -3,7 +3,7 @@ import { drizzle } from 'drizzle-orm/pglite'
 import { migrate } from 'drizzle-orm/pglite/migrator'
 import { afterEach, beforeEach } from 'vitest'
 import * as schema from '../db/schema'
-import { seed } from '../server/seed'
+import { seed } from '../mocks/seed'
 
 /** テストの「今日」。シードの日付（期限切れの判定など）はこの日を基準に作る */
 export const TEST_TODAY = '2026-11-15'

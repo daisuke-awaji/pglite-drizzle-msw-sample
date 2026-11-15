@@ -1,7 +1,9 @@
+import { USES_MOCK_API } from './lib/env'
 import { reportError } from './lib/report-error'
 
 // 起動（モック API・ブラウザ内 DB の準備）に失敗したときの画面。
-// React やルーターが動く前に失敗することもあるので、DOM を直接組み立てる
+// React やルーターが動く前に失敗することもあるので、DOM を直接組み立てる。
+// 本物の API につなぐビルドにはブラウザ内 DB がないので、原因の説明と「データを消す」ボタンは出さない
 
 /** PGlite が IndexedDB に作るデータベース名（src/db/client.browser.ts の idb://starter-kit） */
 export const IDB_NAME = '/pglite/starter-kit'
@@ -30,22 +32,30 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node
 }
 
-export function renderBootError(root: HTMLElement, error: unknown) {
-  reportError(error, { source: 'boot' })
-  const message = explainBootFailure(error, {
-    indexedDB: typeof indexedDB !== 'undefined',
-    serviceWorker: typeof navigator !== 'undefined' && 'serviceWorker' in navigator,
-  })
-
-  const reload = el('button', { type: 'button', className: 'boot-button', textContent: '読み込み直す' })
-  reload.addEventListener('click', () => location.reload())
-
+function wipeButton() {
   const wipe = el('button', { type: 'button', className: 'boot-button', textContent: 'このアプリのデータを消して読み込み直す' })
   wipe.addEventListener('click', () => {
     if (!window.confirm('ブラウザ内のデータ（プロジェクト・タスクなど）をすべて消します。よろしいですか？')) return
     const req = indexedDB.deleteDatabase(IDB_NAME)
     for (const type of ['success', 'error', 'blocked']) req.addEventListener(type, () => location.reload())
   })
+  return wipe
+}
+
+export function renderBootError(root: HTMLElement, error: unknown) {
+  reportError(error, { source: 'boot' })
+  const message = USES_MOCK_API
+    ? explainBootFailure(error, {
+        indexedDB: typeof indexedDB !== 'undefined',
+        serviceWorker: typeof navigator !== 'undefined' && 'serviceWorker' in navigator,
+      })
+    : 'アプリの起動に失敗しました。時間をおいて読み込み直してください。'
+
+  const reload = el('button', { type: 'button', className: 'boot-button', textContent: '読み込み直す' })
+  reload.addEventListener('click', () => location.reload())
+
+  const actions = el('div', { className: 'boot-actions' }, reload)
+  if (USES_MOCK_API) actions.append(wipeButton())
 
   const details = el(
     'details',
@@ -58,14 +68,7 @@ export function renderBootError(root: HTMLElement, error: unknown) {
   const panel = el(
     'main',
     { className: 'boot-error' },
-    el(
-      'div',
-      { className: 'boot-error-body' },
-      heading,
-      el('p', { textContent: message }),
-      el('div', { className: 'boot-actions' }, reload, wipe),
-      details,
-    ),
+    el('div', { className: 'boot-error-body' }, heading, el('p', { textContent: message }), actions, details),
   )
   panel.setAttribute('role', 'alert')
   panel.setAttribute('aria-labelledby', 'boot-error-title')
