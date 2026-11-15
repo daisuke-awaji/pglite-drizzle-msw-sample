@@ -18,6 +18,7 @@ import { PageHeader } from '../components/display'
 import { InlineError } from '../components/error-view'
 import { SelectField, TextField } from '../components/fields'
 import { USES_MOCK_API } from '../lib/env'
+import { useFocusAfterRemoval } from '../lib/focus-after-removal'
 import { tagInput } from '../shared/schemas'
 import type { DbInfo, TagListItem } from '../shared/types'
 import { usePreferences, type Fault, type Latency, type Theme } from '../stores/preferences'
@@ -166,16 +167,21 @@ function TagList({ tags }: { tags: TagListItem[] }) {
 
 function TagRow({ tag }: { tag: { id: number; name: string; taskCount: number } }) {
   const fetcher = useFetcher<ActionResult>()
+  const { ref: rowRef, plan: planFocus } = useFocusAfterRemoval<HTMLLIElement>()
   if (fetcher.state !== 'idle') return null
   return (
-    <li>
+    <li ref={rowRef}>
       <span className="tag">{tag.name}</span>
       <span className="muted small tabular">{tag.taskCount} 件</span>
       <Button
         data-variant="ghost"
         aria-label={`タグ「${tag.name}」を削除`}
         data-agent-confirm={`タグ「${tag.name}」を削除し、${tag.taskCount} 件のタスクから外します`}
-        onClick={() => fetcher.submit({ intent: 'delete-tag', id: String(tag.id) }, { method: 'post' })}
+        data-row-focus
+        onClick={() => {
+          planFocus()()
+          void fetcher.submit({ intent: 'delete-tag', id: String(tag.id) }, { method: 'post' })
+        }}
       >
         <XIcon aria-hidden="true" />
       </Button>

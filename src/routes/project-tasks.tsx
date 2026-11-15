@@ -55,6 +55,7 @@ import { Assignee, DueDate, EmptyState, PriorityLabel, StatusLabel } from '../co
 import { DateField, MultiComboboxField, SelectField, TextareaField, TextField } from '../components/fields'
 import { FilterPanel } from '../components/filter-panel'
 import { SearchParamInput } from '../components/search-param-input'
+import { useFocusAfterRemoval } from '../lib/focus-after-removal'
 import {
   PRIORITIES,
   PRIORITY_LABEL,
@@ -279,22 +280,26 @@ function TaskPagination({ page, pageCount }: { page: number; pageCount: number }
 }
 
 // 楽観的更新: 送信中は fetcher.formData の値を先に画面へ出す。失敗すれば loader の値に戻る
-function useOptimisticTask(task: TaskListItem) {
+function useOptimisticTask<T extends HTMLElement>(task: TaskListItem) {
   const fetcher = useFetcher<ActionResult>({ key: `task-${task.id}` })
+  const focus = useFocusAfterRemoval<T>()
   const pending = fetcher.formData
   const status = (pending?.get('status') as TaskStatus | null) ?? task.status
   const deleting = pending?.get('intent') === 'delete'
   const update = (patch: Record<string, string>) =>
     fetcher.submit({ intent: 'update', id: String(task.id), ...patch }, { method: 'post' })
   const remove = async () => {
+    const restoreFocus = focus.plan()
     const ok = await confirmDanger({
       title: `「${task.title}」を削除しますか？`,
       description: `タスク「${task.title}」と、そのコメント ${task.commentCount} 件を削除します。`,
       confirmLabel: 'タスクを削除',
     })
-    if (ok) await fetcher.submit({ intent: 'delete', id: String(task.id) }, { method: 'post' })
+    if (!ok) return
+    restoreFocus()
+    await fetcher.submit({ intent: 'delete', id: String(task.id) }, { method: 'post' })
   }
-  return { status, deleting, update, remove }
+  return { status, deleting, update, remove, rowRef: focus.ref }
 }
 
 function TaskTable({ tasks }: { tasks: TaskListItem[] }) {
@@ -329,10 +334,10 @@ function TaskTable({ tasks }: { tasks: TaskListItem[] }) {
 }
 
 function TaskRow({ task }: { task: TaskListItem }) {
-  const { status, deleting, update, remove } = useOptimisticTask(task)
+  const { status, deleting, update, remove, rowRef } = useOptimisticTask<HTMLTableRowElement>(task)
   if (deleting) return null
   return (
-    <tr data-status={status}>
+    <tr ref={rowRef} data-status={status}>
       <td className="col-check" data-label="完了">
         <Checkbox
           aria-label={`「${task.title}」を完了にする`}
@@ -408,7 +413,7 @@ function TaskMenu({
         else update({ status: value })
       }}
     >
-      <MenuTrigger aria-label={`「${task.title}」の操作`} data-variant="ghost">
+      <MenuTrigger aria-label={`「${task.title}」の操作`} data-variant="ghost" data-row-focus>
         <MoreHorizontalIcon aria-hidden="true" />
       </MenuTrigger>
       <MenuContent>
@@ -466,10 +471,10 @@ function Board({ tasks }: { tasks: TaskListItem[] }) {
 }
 
 function BoardCard({ task }: { task: TaskListItem }) {
-  const { status, deleting, update, remove } = useOptimisticTask(task)
+  const { status, deleting, update, remove, rowRef } = useOptimisticTask<HTMLLIElement>(task)
   if (deleting) return null
   return (
-    <li className="board-card" data-moving={status !== task.status ? '' : undefined}>
+    <li ref={rowRef} className="board-card" data-moving={status !== task.status ? '' : undefined}>
       <div className="board-card-head">
         <Link to={`/tasks/${task.id}`}>{task.title}</Link>
         <TaskMenu task={task} status={status} update={update} remove={remove} />

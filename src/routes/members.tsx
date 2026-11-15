@@ -15,6 +15,7 @@ import { api } from '../api/client'
 import { confirmDanger } from '../components/confirm-danger'
 import { EmptyState, MemberAvatar, PageHeader } from '../components/display'
 import { TextField } from '../components/fields'
+import { useFocusAfterRemoval } from '../lib/focus-after-removal'
 import { memberInput, memberPatch } from '../shared/schemas'
 import type { MemberListItem } from '../shared/types'
 import { errorsFor, intentOf, load, run, unknownIntent, validate, type ActionResult } from './lib'
@@ -104,6 +105,7 @@ export function Component() {
 
 function MemberRow({ member }: { member: MemberListItem }) {
   const fetcher = useFetcher<ActionResult>()
+  const { ref: rowRef, plan: planFocus } = useFocusAfterRemoval<HTMLTableRowElement>()
   if (fetcher.state !== 'idle' && fetcher.formData?.get('intent') === 'delete') return null
 
   const remove = async () => {
@@ -111,12 +113,15 @@ function MemberRow({ member }: { member: MemberListItem }) {
       member.openTaskCount > 0
         ? `${member.name}さんを削除します。担当中のタスク ${member.openTaskCount} 件は未割り当てになり、コメントは残ります。`
         : `${member.name}さんを削除します。コメントは投稿者なしで残ります。`
+    const restoreFocus = planFocus()
     const ok = await confirmDanger({ title: `${member.name}さんを削除しますか？`, description, confirmLabel: 'メンバーを削除' })
-    if (ok) fetcher.submit({ intent: 'delete', id: String(member.id) }, { method: 'post' })
+    if (!ok) return
+    restoreFocus()
+    await fetcher.submit({ intent: 'delete', id: String(member.id) }, { method: 'post' })
   }
 
   return (
-    <tr>
+    <tr ref={rowRef}>
       <td className="cell-primary">
         <span className="assignee">
           <MemberAvatar member={member} />
@@ -141,7 +146,7 @@ function MemberRow({ member }: { member: MemberListItem }) {
             if (value === 'delete') return remove()
           }}
         >
-          <MenuTrigger aria-label={`${member.name}さんの操作`} data-variant="ghost">
+          <MenuTrigger aria-label={`${member.name}さんの操作`} data-variant="ghost" data-row-focus>
             <MoreHorizontalIcon aria-hidden="true" />
           </MenuTrigger>
           <MenuContent>
