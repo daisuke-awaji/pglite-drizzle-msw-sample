@@ -57,9 +57,16 @@ describe('ログイン', () => {
     await expect(s.handleCallback(new URL('https://app.example.com/auth/callback?error=access_denied&error_description=User+is+disabled'))).rejects.toThrow(/User is disabled/)
   })
 
-  test('戻り先は自分のサイトのパスだけ（別のサイトの URL にしない）', async () => {
+  test('401 が重なってもログインの画面へ移るのは 1 回（state が書き換わらない）', async () => {
     const s = await load()
+    await Promise.all([s.login(), s.login(), s.login()])
+    expect(assign).toHaveBeenCalledTimes(1)
+  })
+
+  test('戻り先は自分のサイトのパスだけ（別のサイトの URL にしない）', async () => {
     for (const evil of ['//evil.example/x', 'https://evil.example/', '/auth/callback?code=x']) {
+      vi.resetModules()
+      const s = await load()
       assign.mockReset()
       await s.login(evil)
       const state = new URL(assign.mock.calls[0]![0] as string).searchParams.get('state')!

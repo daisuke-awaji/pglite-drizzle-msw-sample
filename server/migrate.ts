@@ -84,7 +84,8 @@ const log = (fields: Record<string, unknown>) => consoleLogger.info({ type: 'mig
 
 export async function runMode(mode: MigrateEvent['mode'], env: Env, deadline: number, event: MigrateEvent = {}) {
   if (mode === 'verify') {
-    if (!event.host) throw new Error('verify には host（確かめるクラスターの endpoint）が要ります')
+    // 秘密情報（migrator のパスワード）を送る先なので、Aurora の endpoint だけを受け付ける（関数は VPC の外にも出られない）
+    if (!event.host || !/^[a-z0-9.-]+\.rds\.amazonaws\.com$/.test(event.host)) throw new Error('verify の host は Aurora の endpoint（*.rds.amazonaws.com）にしてください')
     return verifyDatabase(migratorConnector(env, { host: event.host }), defaultMigrationsFolder(env))
   }
   const options: RunOptions = {

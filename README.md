@@ -204,6 +204,12 @@ WCAG 2.2 AA を目標にし、e2e で axe-core（重大・深刻な違反が 0 �
 | unit | `src/**/*.test.ts(x)` | 部品（キーボード・フォーカス・ARIA）、エラーの出し分け、起動失敗の画面、**層の依存**（`src/architecture.test.ts`） | 数秒 |
 | integration | `src/**/*.integration.test.ts(x)` | 本物の PostgreSQL（PGlite）に本番と同じマイグレーションを流して、サーバー層・**全エンドポイント**・**画面**（本物のルート定義を本物の API につないで描画） | 1 分ほど |
 | e2e | `e2e/*.spec.ts` | ビルドしたアプリを Chromium で操作。全画面の axe・はみ出し・フォーカス・ドロワー・タッチの大きさ、主な業務の流れ、障害シミュレーション、起動失敗 | 数分 |
+| server | `server/**/*.test.ts` | 本番の API（Hono）の HTTP の決まり、設定、秘密情報、ID トークンの検証 | 数秒 |
+| server-postgres | `server/**/*.pg.test.ts` | 本物の PostgreSQL（`TEST_DATABASE_URL`）で、接続プール・マイグレーションの実行役・DB の利用者の権限・**ビルドした zip**（Node 24 で動かす） | 30 秒ほど |
+| infra | `infra/test/*.test.ts` | CDK のテンプレートの決まり、cdk-nag、デプロイと運用のスクリプト（AWS の呼び出しを置き換える） | 10 秒ほど |
+
+結合テストは既定ではメモリ上の PGlite に流れます。`TEST_DATABASE_URL=postgres://...` を渡すと本物の PostgreSQL に流れ（テストごとに DB を複製する）、
+server-postgres も走ります（CI の integration-postgres は `postgres:18.6`）。`cd infra && npm ci && npm test` は別に流します。
 
 テストの決まり:
 
@@ -246,7 +252,7 @@ push すると `.github/workflows/ci.yml` が lint・型・unit/integration（�
 DB の接続を差し替え、MSW が登録しているのと同じルート表（`src/server/routes.ts`）をサーバーに登録します。
 HTTP の決まり（パスの ID の検証、壊れた JSON は 400、POST は 201、本文がなければ 204、想定外の例外は中身を隠して 500）は
 `src/server/http.ts` の `respond` に入っていて、Web 標準の `Request` / `Response` だけで書いてあるので、そのまま使えます。
-例（Hono + node-postgres）:
+AWS に載せる本番のサーバーは [`server/`](server/app.ts) にあります（[本番環境（AWS）](#本番環境aws)）。ほかの基盤に載せるときの最小の形（Hono + node-postgres）:
 
 ```ts
 import { Hono } from 'hono'
@@ -275,10 +281,9 @@ export default app
 MSW・PGlite・開発用の機能（設定画面の「API の遅延」「障害シミュレーション」「データの保存先」、`window.agent`）が
 バンドルから外れます。`npm run check:no-mock-build` で、外れていることを確かめられます（CI でも走ります）。
 
-まだ入っていないもの（顧客案件で足す）:
-
-- **認証と認可。** サーバー層の関数は「誰が呼んだか」を受け取りません。ログインを入れたら、コメントの投稿者などは
-  クライアントから受け取らずにログイン中の利用者にし、プロジェクトのメンバーかどうかで読み書きを制限してください。
+**認証と認可**は、サーバー層の関数が `access`（誰が呼んだか。`src/server/access.ts`）を受け取ります。上の最小の形やモックでは `ALL`（制限なし）、
+本番のサーバーは Cognito の ID トークンを検証し、メールアドレスでメンバーにつないで渡します。ログインした人は自分がメンバーのプロジェクトだけを読み書きでき、
+コメントの投稿者はログイン中の利用者になります（[docs/production.md#認証と認可](docs/production.md#認証と認可)）。
 
 ### スキーマを変える
 
@@ -293,36 +298,45 @@ MSW・PGlite・開発用の機能（設定画面の「API の遅延」「障害�
 
 ![本番構成（AWS）](docs/architecture/aws-production.png)
 
-本番に載せるときの構成と手順の**計画**です（AWS 側はまだ作っていません）。設計の判断、環境ごとの設定、手順書を含めた全体は
-[docs/production.md](docs/production.md)、図の元は [docs/architecture/aws-production.drawio](docs/architecture/aws-production.drawio) です。
+本番に載せるための構成・デプロイの手順・運用です。**コードは揃っていて、テストと CI で確かめてありますが、AWS へはまだデプロイしていません**
+（AWS の上で確かめることは [docs/production.md#aws-の上でまだ確かめていないこと](docs/production.md#aws-の上でまだ確かめていないこと)）。
+設計の判断、環境ごとの設定、初回の構築、手順書を含めた全体は [docs/production.md](docs/production.md)、図の元は [docs/architecture/aws-production.drawio](docs/architecture/aws-production.drawio) です。
 
 | 帯 | 構成 | ポイント |
 |---|---|---|
-| Edge & Auth | Route 53 → CloudFront（AWS WAF）→ `/*` は S3、`/api/*` は Lambda Web Function | 画面と API を同じドメインで配るので、CORS もビルドの設定もいらない（API の向き先は既定で `/api`）。ログイン（Cognito）は Phase 4 |
+| Edge & Auth | Route 53 → CloudFront（AWS WAF）→ `/*` は S3、`/api/*` は Lambda Web Function。Cognito でログイン | 画面と API を同じドメインで配るので、CORS もビルドの設定もいらない（API の向き先は既定で `/api`） |
 | Compute | **Lambda Web Functions**（Node 24）。外向きの通信は Network Connector で VPC へ。マイグレーションは Lambda 関数 | `src/server/routes.ts` を Hono に登録した HTTP サーバーをそのまま載せる。endpoint は `IamAuth` で、CloudFront が OAC で署名したリクエストだけを受ける。NAT Gateway は置かず、Secrets Manager へは VPC endpoint で出る |
 | Data & Storage | Aurora PostgreSQL 18 Serverless v2（Writer + 別 AZ の Reader）、Secrets Manager、KMS、AWS Backup | ブラウザの PGlite（PostgreSQL 18.6）と同じメジャーバージョン。DB の利用者はアプリ用（読み書きだけ）とマイグレーション用に分ける |
 
-`src/server` はそのまま使えます。本物の PostgreSQL 18.6 に node-postgres でつなぎ、結合テスト 78 件が通ることを確かめてあります。
-Web Functions の入口の試作（`AWS_LAMBDA_HTTP_ENDPOINT` で listen、DB には最初のリクエストでつなぐ、`SIGTERM` で 1 秒以内に止まる）も、Node 24 と PostgreSQL 18.6 で確かめました（AWS の上ではまだ動かしていません）。
+| 置き場所 | 中身 |
+|---|---|
+| `server/` | API の入口（`AWS_LAMBDA_HTTP_ENDPOINT` で listen、DB には最初のリクエストでつなぐ、`SIGTERM` で 1 秒以内に止まる）、ID トークンの検証、マイグレーションの実行役、DB の利用者を作る関数 |
+| `scripts/build-server.mjs` | `dist-server/api.zip`（Web Function）と `migrate.zip`（Lambda 関数）。同じ中身なら同じバイト列 |
+| `infra/` | AWS CDK（Network・Data・Api・Migrate・EdgeGlobal・Edge・Auth・EdgeAlarms・Monitoring・Ci）と、デプロイ・運用のスクリプト |
+| `.github/workflows/deploy.yml` | `main` の CI のあと stg へ、承認のあと prod へ（リポジトリの変数 `AWS_DEPLOY_ENABLED` が `true` のときだけ） |
+| `src/auth/` | 画面のログイン（認可コード + PKCE）。`VITE_AUTH_MODE=cognito` のビルドだけ |
+
+ビルドした zip を展開して Node 24 と PostgreSQL 18.6 で動かし、listen・同時 64 本・`SIGTERM`・DB につながらないとき・ログインを確かめています（`server/bundle.pg.test.ts`）。
 
 **Fargate は、Lambda の制約に当たって載らないものだけに使います。** 15 分を超える SQL やバッチ（リハーサルで測る）、2 vCPU・2 GB や 900 秒を超える処理、WebSocket、
 API の入口を閉域網だけにする要件などです。最初は作らず、必要になったら足します（[Fargate を使うとき](docs/production.md#fargate-を使うとき)）。
 
-> 今の API には認証がありません。認証（Phase 4）が入るまでは、本番のデータを載せて公開せず、WAF で社内の IP だけを通すなど入口で絞ってください。
+> prod は認証なしでは動きません。公開する範囲を IP で絞るときは、WAF に許す CIDR を渡します（`-c allowedCidrs.prod=...`）。
 
 ### デプロイの流れ
 
 `main` に入ると stg へ自動で、GitHub Environments で承認すると prod へ、同じ手順で入ります（GitHub Actions から OIDC で AWS に入る）。順番は入れ替えません。
 
-1. サーバーを esbuild で 1 つの zip にし（キーはコミット SHA）、S3 に置く。画面を `VITE_USE_MOCK=false` でビルドする
-2. migrate 関数だけを新しい zip にする（`cdk deploy <env>-Migrate`）
-3. **マイグレーションを migrate 関数で 1 回だけ流す。** 失敗したらここで止まり、API も画面も古いまま
-4. 新しい revision を作り、確認用の endpoint（`next`）でスモークテストする
-5. 本番の endpoint（`live`）を新しい revision に切り替える（prod は 10% を 10 分流してから）。1 つ前の revision は `next` に残す
-6. 画面の JS・CSS を置いてから `index.html` を置き、`index.html` のキャッシュだけを消す（古い JS は消さない）
-7. スモークテスト（CloudFront 経由で、データを変えない主な画面）
+1. サーバーを esbuild で 1 つの zip にし、S3 に置く（`upload.ts`。キーはコミット SHA、上書きしない）
+2. migrate 関数だけを新しい zip にする（`cdk deploy <app>-<env>-Migrate --exclusively`）
+3. **マイグレーションを migrate 関数で 1 回だけ流す**（`migrate.ts pre` → `migrate.ts migrate`）。失敗したらここで止まり、API も画面も古いまま
+4. 新しい revision を作り、確認用の endpoint（`next`）でスモークテストする（`release.ts`。SigV4 で署名して送る）
+5. 本番の endpoint（`live`）を新しい revision に切り替える（prod は 10% を 10 分流し、アラームと新しいビルドの 5xx を見る）。1 つ前の revision は `next` に残す
+6. 画面を本番の設定（Cognito・RUM）でビルドし、JS・CSS を置いてから `index.html` を置き、`index.html` のキャッシュだけを消す（`publish-web.ts`。古い JS は消さない）
+7. スモークテスト（`smoke.ts --site`。CloudFront 経由で、画面・SPA の書き換え・API・POST）
 
-戻すときは、API は `live` を 1 つ前の revision に向け直します（数秒。作り直さない）。画面は前のビルドの `index.html` を置き直します。
+スクリプトは `infra/scripts/deploy/` にあります。戻すときは、API は `rollback.ts <env>` で `live` を 1 つ前の revision に向け直します（数秒。作り直さない）。
+画面は前のビルド（GitHub Actions の成果物）を置き直します。
 DB のスキーマは戻さず、直すマイグレーションを足して前に進めます。
 
 ### マイグレーション（ALTER）の決まり
@@ -350,10 +364,11 @@ journal に載っていない SQL、`CONCURRENTLY`。上の表の書き方は**�
 
 ### 運用
 
-- **監視**: CloudFront と Web Function の 5xx、API の応答時間（アプリが出す）、起動の失敗、スロットリングと実行環境の数、Aurora の ACU・接続数・デッドロック、画面の JS エラー（CloudWatch RUM）、費用。アラームは Slack に送る。
-- **バックアップ**: Aurora の PITR（35 日）と AWS Backup（月 1 回を 1 年）。目標は RPO 5 分・RTO 2 時間（案）。3 か月に 1 回、stg で復元を練習する。
+- **監視**: CloudFront と Web Function の 5xx、API の応答時間（アプリのログから）、起動の失敗、スロットリングと実行環境の数、Aurora の ACU・接続数・デッドロック、画面の JS エラー（CloudWatch RUM）、費用。アラームはメールと Slack に送る（`infra/lib/monitoring.ts`）。
+- **バックアップ**: Aurora の PITR（35 日）と AWS Backup（月 1 回を 1 年）。目標は RPO 5 分・RTO 2 時間（案）。3 か月に 1 回、stg で復元を練習する（`infra/scripts/ops/restore-drill.ts`）。
+- **負荷試験**: `scripts/load-test.mjs`（一覧・詳細・ダッシュボード・作成を混ぜる）。stg で流して `maxEnvironments` とプールの上限を決める。
 - **手順書**: デプロイ・マイグレーションの失敗、DB のフェイルオーバー、誤って消したデータの復元、DB に直接入るとき、秘密情報のローテーション、メジャーバージョンアップ（[docs/production.md#手順書ランブック](docs/production.md#手順書ランブック)）。
-- **進め方**: Phase 0（この計画とマイグレーションの検査。済み）→ 1 サーバー（Node 24 にそろえる・`server/`・zip のビルド・本物の PostgreSQL での CI）→ 2 基盤（CDK）→ 3 デプロイ → 4 認証 → 5 本番の開始。
+- **進め方**: Phase 0〜5 のコード（サーバー・CDK・デプロイ・認証・監視・運用のスクリプト）は済み。AWS では dev → stg の構築と確かめ、負荷試験、復元の練習、prod の構築の順に進める（[docs/production.md#進め方](docs/production.md#進め方)）。
 
 ## ディレクトリ
 
@@ -365,14 +380,17 @@ src/
   api/          fetch だけの API クライアント（ApiError で失敗の種類を分ける）
   lib/          画面で共通に使うフック（未保存の確認・オンライン状態）とエラーの記録
   mocks/        MSW（ルート表を登録するだけ）、サンプルデータ、開発用のエンドポイント（本番には持っていかない）
-  server/       業務ロジックと HTTP の境界（routes.ts・http.ts）。本番にそのまま持っていく
+  server/       業務ロジックと HTTP の境界（routes.ts・http.ts）、誰が呼んだか（access.ts）。本番にそのまま持っていく
+  auth/         画面のログイン（Cognito。VITE_AUTH_MODE=cognito のビルドだけ）
   shared/       Zod スキーマ・DTO の型・enum（DB・API・画面で共有）
   db/           Drizzle のスキーマと、ブラウザ用の PGlite 起動・マイグレーター
   test/         テストの道具（DB の複製、本物の API、画面の描画、コンソールの監視）
+server/         本番の API（Lambda Web Function）・マイグレーションの実行役・DB の利用者・ログイン
+infra/          AWS CDK と、デプロイ（scripts/deploy）・運用（scripts/ops）のスクリプト（npm は別）
 e2e/            Playwright の e2e（fixtures.ts に共通の確認）
 drizzle/        drizzle-kit が生成したマイグレーション SQL（main に入ったものは書き換えない）
-scripts/        ビルドとマイグレーションの検査（check-no-mock-build.mjs、check-migrations.mjs）
-docs/           スクリーンショット、本番の計画（production.md）、構成図（architecture/）
+scripts/        ビルド（build-server.mjs）、マイグレーションの検査（check-migrations.mjs）、check-no-mock-build.mjs、負荷試験（load-test.mjs）
+docs/           スクリーンショット、本番環境（production.md）、構成図（architecture/）
 ```
 
 ## 注意
