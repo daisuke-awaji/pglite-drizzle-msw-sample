@@ -16,6 +16,10 @@
   --info: light-dark(oklch(0.5 0.15 255), oklch(0.75 0.12 255));
   /* フォーカスの輪は背景との差を 3:1 以上にする（UI SDK の既定は薄い灰色で、白い背景では見えにくい） */
   --ui-ring: light-dark(oklch(0.55 0.17 255), oklch(0.72 0.13 255));
+  /* 入力欄・チェックボックス・スイッチの枠。どこに入力できるかが分かるよう、背景との差を 3:1 以上にする（WCAG 1.4.11）。
+     UI SDK の既定（ライト 0.82 / ダーク 0.409）は 1.7:1 / 2.3:1 しかない。
+     ライト 0.6: 白 3.9:1・ページ 3.8:1・muted 3.6:1、ダーク 0.56: 背景 4.3:1・muted 3.7:1 */
+  --ui-input: light-dark(oklch(0.6 0 0), oklch(0.56 0 0));
   --topbar-h: 3rem;
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
@@ -1172,8 +1176,8 @@ svg {
   }
 
   & [role='option']:focus-visible {
-    outline: 2px solid var(--ui-ring-border);
-    outline-offset: -2px;
+    outline: 3px solid var(--ui-ring);
+    outline-offset: -3px;
   }
 
   & [role='option'][data-selected] {
@@ -1231,7 +1235,7 @@ svg {
   }
 
   & button:focus-visible {
-    outline: 2px solid var(--ui-ring-border);
+    outline: 3px solid var(--ui-ring);
     outline-offset: 2px;
   }
 }
@@ -1559,6 +1563,53 @@ svg {
 
   :focus-visible {
     outline: 2px solid Highlight !important;
+  }
+
+  /* 強制カラーでは背景色が消える。UI SDK はチェック印や矢印を「背景色 + mask」で描き、
+     スイッチのつまみやラジオの点も背景色だけで描くので、そのままでは状態が見えなくなる（WCAG 1.4.11） */
+  :is(
+      [data-slot='checkbox-indicator'],
+      [data-slot='select-item-indicator'],
+      [data-slot='combobox-item-indicator'],
+      [data-slot='listbox-item-indicator'],
+      [data-slot='menu-item-indicator']
+    )::before,
+  :is([data-slot='select-trigger'], [data-slot='combobox-trigger'])::after {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+
+  /* オンのチェックボックス・スイッチは、強調色で塗って形でも区別できるようにする */
+  [data-slot='checkbox']:is([data-checked], [data-indeterminate]),
+  [data-slot='switch'][data-checked] {
+    forced-color-adjust: none;
+    border-color: Highlight;
+    background: Highlight;
+  }
+
+  [data-slot='checkbox']:is([data-checked], [data-indeterminate]) [data-slot='checkbox-indicator']::before {
+    background: HighlightText;
+  }
+
+  [data-slot='switch'] {
+    border-color: ButtonText;
+  }
+
+  [data-slot='switch-thumb'],
+  [data-slot='radio-indicator'] {
+    forced-color-adjust: none;
+    background: ButtonText;
+  }
+
+  [data-slot='switch-thumb'][data-checked] {
+    background: HighlightText;
+  }
+
+  /* 割り当て一覧の選んだ項目（ふだんは box-shadow で示していて、強制カラーでは消える） */
+  .transfer-list [role='option'][data-selected] {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
   }
 }
 
