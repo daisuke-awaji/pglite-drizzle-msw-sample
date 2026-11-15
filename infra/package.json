@@ -17,6 +17,7 @@
     "@aws-sdk/client-cloudwatch": "^3.1169.0",
     "@aws-sdk/client-lambda": "^3.1169.0",
     "@aws-sdk/client-lambda-web": "^3.1169.0",
+    "@aws-sdk/client-rds": "^3.1169.0",
     "@aws-sdk/client-s3": "^3.1169.0",
     "@aws-sdk/client-ssm": "^3.1169.0",
     "@aws-sdk/credential-providers": "^3.1169.0",
