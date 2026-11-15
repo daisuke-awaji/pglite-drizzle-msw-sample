@@ -51,6 +51,85 @@ export async function expectNoHorizontalOverflow(page: Page) {
   expect(overflow).toBeLessThanOrEqual(0)
 }
 
+/**
+ * 文字が箱からはみ出していない・ほかの文字と重なっていない・省略記号なしで切れていない。
+ * 見えている文字（テキストノード）ごとに、祖先の箱に収まっているかを見る。横スクロールする箱の中は対象外
+ */
+export async function expectNoTextOverflow(page: Page) {
+  const problems = await page.evaluate(() => {
+    const out: string[] = []
+    // oxlint-disable-next-line unicorn/consistent-function-scoping -- page.evaluate の中はブラウザで動くので、外の関数を使えない
+    const name = (el: Element) => `${el.tagName.toLowerCase()}${el.classList.length ? '.' + [...el.classList].join('.') : ''}`
+    // oxlint-disable-next-line unicorn/consistent-function-scoping -- page.evaluate の中はブラウザで動くので、外の関数を使えない
+    const hidden = (el: Element) => {
+      for (let e: Element | null = el; e; e = e.parentElement) {
+        const cs = getComputedStyle(e)
+        if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0' || cs.clipPath === 'inset(50%)') return true
+      }
+      return false
+    }
+    const texts: { el: Element; text: string; rects: DOMRect[] }[] = []
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      const el = n.parentElement
+      const text = n.textContent?.trim() ?? ''
+      if (!el || !text || el.closest('script, style, svg') || hidden(el)) continue
+      const range = document.createRange()
+      range.selectNodeContents(n)
+      const rects = [...range.getClientRects()].filter((r) => r.width > 1 && r.height > 1)
+      if (rects.length === 0) continue
+      const left = Math.min(...rects.map((r) => r.left))
+      const right = Math.max(...rects.map((r) => r.right))
+      let scrolls = false
+      for (let a: Element | null = el; a && a !== document.body; a = a.parentElement) {
+        const cs = getComputedStyle(a)
+        if (cs.display === 'inline' || cs.display === 'contents') continue
+        const box = a.getBoundingClientRect()
+        if (right - box.right > 1.5 || box.left - left > 1.5) {
+          if (cs.overflowX === 'visible') out.push(`はみ出し: ${name(el)} が ${name(a)} から ${Math.round(Math.max(right - box.right, box.left - left))}px「${text.slice(0, 20)}」`)
+          else if (cs.overflowX === 'auto' || cs.overflowX === 'scroll') scrolls = true
+          else if (getComputedStyle(el).textOverflow !== 'ellipsis' && cs.textOverflow !== 'ellipsis' && cs.webkitLineClamp === 'none')
+            out.push(`省略記号なしで切れている: ${name(el)}「${text.slice(0, 20)}」`)
+          break
+        }
+        if (cs.overflowX !== 'visible') break
+      }
+      if (scrolls) continue
+      // 省略記号で隠れた部分は見えないので、切り取る祖先の箱で切ってから重なりを見る
+      let visible = rects.map((r) => new DOMRect(r.x, r.y, r.width, r.height))
+      for (let a: Element | null = el; a && a !== document.documentElement; a = a.parentElement) {
+        const cs = getComputedStyle(a)
+        if (cs.overflowX === 'visible' && cs.overflowY === 'visible') continue
+        const box = a.getBoundingClientRect()
+        visible = visible
+          .map((r) => {
+            const x = Math.max(r.left, box.left)
+            const y = Math.max(r.top, box.top)
+            return new DOMRect(x, y, Math.min(r.right, box.right) - x, Math.min(r.bottom, box.bottom) - y)
+          })
+          .filter((r) => r.width > 1 && r.height > 1)
+      }
+      if (visible.length) texts.push({ el, text, rects: visible })
+    }
+    // 文字どうしの重なり（前面のポップアップと後ろの画面、わざと重ねるアバターは比べない）
+    // oxlint-disable-next-line unicorn/consistent-function-scoping -- page.evaluate の中はブラウザで動くので、外の関数を使えない
+    const layer = (e: Element) => e.closest('[role=dialog], [role=menu], [role=listbox], [data-slot=toast]')
+    for (let i = 0; i < texts.length; i++) {
+      for (let j = i + 1; j < texts.length; j++) {
+        const A = texts[i]!
+        const B = texts[j]!
+        if (A.el === B.el || layer(A.el) !== layer(B.el) || (A.el.closest('.avatar-stack') && B.el.closest('.avatar-stack'))) continue
+        const hit = A.rects.some((a) =>
+          B.rects.some((b) => Math.min(a.right, b.right) - Math.max(a.left, b.left) > 2 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 3),
+        )
+        if (hit) out.push(`重なり: ${name(A.el)}「${A.text.slice(0, 12)}」と ${name(B.el)}「${B.text.slice(0, 12)}」`)
+      }
+    }
+    return [...new Set(out)]
+  })
+  expect(problems).toEqual([])
+}
+
 /** 端末の設定（Zustand の persist）を、起動前に localStorage へ入れておく */
 export async function setPreferences(page: Page, prefs: Record<string, unknown>) {
   await page.addInitScript((value) => {
