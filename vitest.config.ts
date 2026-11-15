@@ -46,10 +46,13 @@ export default mergeConfig(
           'src/db/client.browser.ts',
           'src/db/migrate.browser.ts',
           'src/mocks/browser.ts',
+          // 型だけのファイルと、開発者ツール用のブリッジ（window.agent）
+          'src/shared/types.ts',
+          'src/agent.ts',
         ],
         reporter: ['text-summary', 'html', 'json-summary'],
         // 下回ったら CI を落とす。上げるのはよいが、理由なく下げない（README の「カバレッジ」を参照）
-        thresholds: { statements: 0, branches: 0, functions: 0, lines: 0 },
+        thresholds: { statements: 85, branches: 72, functions: 85, lines: 87 },
       },
     },
   }),
