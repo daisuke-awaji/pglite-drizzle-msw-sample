@@ -127,7 +127,13 @@ export const api = {
   listTags: (signal?: AbortSignal) => request<TagListItem[]>('/tags', { signal }),
   createTag: (input: unknown) => request<Tag>('/tags', json('POST', input)),
   deleteTag: (id: number) => request<void>(`/tags/${id}`, { method: 'DELETE' }),
+}
 
+/**
+ * モック API にだけある開発用のエンドポイント（src/mocks/handlers.ts の devRoutes）。
+ * 本番の API にはないので、呼ぶ側は USES_MOCK_API で囲むこと（囲めば VITE_USE_MOCK=false のビルドから消える）
+ */
+export const devApi = {
   dbInfo: (signal?: AbortSignal) => request<DbInfo>('/_debug', { signal }),
   reset: () => request<void>('/_reset', { method: 'POST' }),
 }

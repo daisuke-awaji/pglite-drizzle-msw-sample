@@ -55,7 +55,7 @@ flowchart LR
   subgraph browser["ブラウザ（GitHub Pages）"]
     R["route の loader / action<br/>src/routes/*"] -->|fetch /api/*| C["API クライアント<br/>src/api/client.ts"]
     C --> M["MSW ハンドラー<br/>src/mocks/handlers.ts"]
-    M --> S["業務ロジック + Zod 検証<br/>src/server/*"]
+    M --> S["ルート表 + 業務ロジック + Zod 検証<br/>src/server/*"]
     S --> D[("PGlite<br/>IndexedDB")]
     R -.読み書き.-> Z["Zustand<br/>localStorage / sessionStorage"]
     R -.読み書き.-> U["URL<br/>?q= ?status= ?page="]
@@ -68,7 +68,7 @@ flowchart LR
 ```
 
 画面は `fetch('/api/...')` しか知りません。`src/server` は HTTP にも PGlite にも依存せず、Drizzle の `db` を受け取るだけなので、
-本番では MSW の代わりにサーバーのルーティングから同じ関数を呼べば移行できます（[後述](#本番の-postgresql-に移行する)）。
+本番では MSW の代わりにサーバーへ同じルート表を登録すれば移行できます（[後述](#本番の-postgresql-に移行する)）。
 
 ## データの持ち方
 
@@ -223,7 +223,7 @@ WCAG 2.2 AA を目標にし、e2e で axe-core（重大・深刻な違反が 0 �
 
 1. 入力の形を `src/shared/schemas.ts` に Zod で書く（サーバー層と画面の両方で使う）
 2. 業務ロジックを `src/server/*.ts` に書き、`*.integration.test.ts` で本物の DB に対して確かめる
-3. `src/mocks/handlers.ts` にルートを足し、`src/api/client.ts` に関数を足し、`api.integration.test.ts` にケースを足す
+3. `src/server/routes.ts` にルートを 1 行足し（MSW にも本番にも同じ表が登録される）、`src/api/client.ts` に関数を足し、`api.integration.test.ts` にケースを足す
 4. `src/routes/*.tsx` に `loader` / `action` / `Component` を書き、`router.tsx` に並べる。`handle.crumb` でパンくずとタブのタイトルが決まる
    - 読み込みは `load()`、保存は `validate()` と `run()` を通す（エラーの出し方がそろう）
    - 表には `table-stack` クラスと各セルの `data-label` を付ける（スマートフォンでカードになる）
@@ -241,32 +241,42 @@ push すると `.github/workflows/ci.yml` が lint・型・unit/integration（�
 
 ## 本番の PostgreSQL に移行する
 
-DB の接続を差し替え、MSW のハンドラーと同じことをサーバーで書きます。例（Hono + node-postgres）:
+DB の接続を差し替え、MSW が登録しているのと同じルート表（`src/server/routes.ts`）をサーバーに登録します。
+HTTP の決まり（パスの ID の検証、壊れた JSON は 400、POST は 201、本文がなければ 204、想定外の例外は中身を隠して 500）は
+`src/server/http.ts` の `respond` に入っていて、Web 標準の `Request` / `Response` だけで書いてあるので、そのまま使えます。
+例（Hono + node-postgres）:
 
 ```ts
 import { Hono } from 'hono'
 import { drizzle } from 'drizzle-orm/node-postgres'
 import { migrate } from 'drizzle-orm/node-postgres/migrator'
 import * as schema from './src/db/schema'
-import { HttpError } from './src/server/core'
-import { createTask, listTasks } from './src/server/tasks'
+import { respond } from './src/server/http'
+import { routes } from './src/server/routes'
 
 const db = drizzle(process.env.DATABASE_URL!, { schema })
 await migrate(db, { migrationsFolder: './drizzle' }) // ブラウザと同じ drizzle/*.sql を流す
 
 const app = new Hono().basePath('/api')
-app.onError((e, c) =>
-  e instanceof HttpError
-    ? c.json({ error: e.message, fieldErrors: e.fieldErrors }, e.status as 400)
-    : c.json({ error: 'サーバーでエラーが発生しました' }, 500),
-)
-app.get('/projects/:id/tasks', async (c) => c.json(await listTasks(db, Number(c.req.param('id')), c.req.query())))
-app.post('/projects/:id/tasks', async (c) => c.json(await createTask(db, Number(c.req.param('id')), await c.req.json()), 201))
+for (const route of routes) {
+  app.on(route.method, route.path, (c) => respond(route, { db, request: c.req.raw, params: c.req.param() }))
+}
 export default app
 ```
 
+本番に持っていかないもの:
+
+- `src/mocks/`（MSW、サンプルデータ `seed.ts`、DB の状態表示 `admin.ts`、`/_debug`・`/_reset`・障害シミュレーション）
+- `src/db/client.browser.ts` と `src/db/migrate.browser.ts`（ブラウザ内の PGlite 用）
+
 フロントは `VITE_USE_MOCK=false VITE_API_BASE=https://api.example.com/api npm run build` でビルドすると、
-MSW のハンドラーと PGlite がバンドルから外れます。
+MSW・PGlite・開発用の機能（設定画面の「API の遅延」「障害シミュレーション」「データの保存先」、`window.agent`）が
+バンドルから外れます。`npm run check:no-mock-build` で、外れていることを確かめられます（CI でも走ります）。
+
+まだ入っていないもの（顧客案件で足す）:
+
+- **認証と認可。** サーバー層の関数は「誰が呼んだか」を受け取りません。ログインを入れたら、コメントの投稿者などは
+  クライアントから受け取らずにログイン中の利用者にし、プロジェクトのメンバーかどうかで読み書きを制限してください。
 
 ### スキーマを変える
 
@@ -283,8 +293,8 @@ src/
   stores/       Zustand（preferences: localStorage、drafts: sessionStorage）
   api/          fetch だけの API クライアント（ApiError で失敗の種類を分ける）
   lib/          画面で共通に使うフック（未保存の確認・オンライン状態）とエラーの記録
-  mocks/        MSW（HTTP ⇔ src/server の橋渡し）
-  server/       業務ロジック（本番にそのまま持っていく）
+  mocks/        MSW（ルート表を登録するだけ）、サンプルデータ、開発用のエンドポイント（本番には持っていかない）
+  server/       業務ロジックと HTTP の境界（routes.ts・http.ts）。本番にそのまま持っていく
   shared/       Zod スキーマ・DTO の型・enum（DB・API・画面で共有）
   db/           Drizzle のスキーマと、ブラウザ用の PGlite 起動・マイグレーター
   test/         テストの道具（DB の複製、本物の API、画面の描画、コンソールの監視）

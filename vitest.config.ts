@@ -6,7 +6,7 @@ import viteConfig from './vite.config.ts'
 // - integration: *.integration.test.ts(x) 本物の PostgreSQL（PGlite）と MSW をつないで確かめる
 // e2e（ビルドしたアプリをブラウザで操作する）は e2e/ にあり、Playwright で別に走らせる
 export default mergeConfig(
-  viteConfig,
+  viteConfig({ command: 'serve', mode: 'test' }),
   defineConfig({
     test: {
       setupFiles: ['./src/test/setup.ts'],

@@ -12,15 +12,28 @@ import {
 // - 画面（route の action）: 送信前に FormData を検証し、往復なしでエラーを出す
 // FormData の値は文字列なので、数値・空文字・複数値を受け取れるよう前処理を入れている。
 
+// PostgreSQL の文字列は NUL（\u0000）を保存できない。そのまま渡すと 500 になるので、入力の段階で断る
+const hasNul = (s: string) => s.includes('\u0000')
+const NUL_MESSAGE = '使えない文字（NUL）が含まれています'
+
 const text = (label: string, max: number) =>
   z
     .string({ error: `${label}を入力してください` })
     .trim()
     .max(max, `${label}は ${max} 文字以内で入力してください`)
+    .refine((s) => !hasNul(s), NUL_MESSAGE)
 
 const required = (label: string, max: number) => text(label, max).min(1, `${label}を入力してください`)
 
-const id = z.coerce.number().int().positive()
+/** PostgreSQL の integer（int4）の上限。これを超える ID は DB に渡すと 500 になるので、検証で弾く */
+export const INT4_MAX = 2_147_483_647
+
+// ID は数値か、数字だけの文字列（FormData・URL から来る）だけを受け付ける。
+// z.coerce.number() は true → 1、[2] → 2、' 1e0 ' → 1 も通してしまうので使わない
+export const id = z.preprocess(
+  (v) => (typeof v === 'string' && /^\d+$/.test(v) ? Number(v) : v),
+  z.number({ error: 'ID が正しくありません' }).int().positive().max(INT4_MAX),
+)
 
 const nullableId = z.preprocess(
   (v) => (v === '' || v === 'none' || v === undefined ? null : v),
@@ -33,9 +46,15 @@ const idList = z.preprocess(
   z.array(id),
 )
 
+// z.iso.date() は 0000 年なども通すが、PostgreSQL の date は 0 年を受け付けない（500 になる）。
+// 業務アプリで意味のある範囲に絞る
+const date = z.iso
+  .date('日付は YYYY-MM-DD の形式で入力してください')
+  .refine((d) => Number(d.slice(0, 4)) >= 1900, '日付は 1900 年以降で入力してください')
+
 const nullableDate = z.preprocess(
   (v) => (v === '' || v === undefined ? null : v),
-  z.iso.date('日付は YYYY-MM-DD の形式で入力してください').nullable(),
+  date.nullable(),
 )
 
 // 作成用（省略時は既定値）と更新用（送った項目だけ変える）を、同じ項目定義から作る。
@@ -66,6 +85,7 @@ const memberFields = {
     .trim()
     .toLowerCase()
     .max(254, 'メールアドレスが長すぎます')
+    .refine((s) => !hasNul(s), NUL_MESSAGE)
     .pipe(z.email('メールアドレスの形式が正しくありません')),
   title: text('役割', 60),
 }
@@ -108,8 +128,7 @@ export const tagInput = z.object({ name: required('タグ名', 30) })
 export const SEARCH_MAX = 100
 const searchText = z
   .string()
-  .trim()
-  .transform((s) => s.slice(0, SEARCH_MAX) || undefined)
+  .transform((s) => s.replaceAll('\u0000', '').trim().slice(0, SEARCH_MAX) || undefined)
   .optional()
   .catch(undefined)
 
@@ -127,6 +146,10 @@ export const taskListQuery = z.object({
   page: z.coerce.number().int().min(1).default(1).catch(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(10).catch(10),
 })
+
+// ダッシュボードの「今日」。画面の端末の日付を送ってもらう（期限切れの判定を利用者の暦に合わせるため）。
+// おかしな値は捨てて、サーバーの今日を使う
+export const dashboardQuery = z.object({ today: date.optional().catch(undefined) })
 
 export type ProjectInput = z.infer<typeof projectInput>
 export type ProjectPatch = z.infer<typeof projectPatch>

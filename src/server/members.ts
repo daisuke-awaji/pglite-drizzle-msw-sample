@@ -35,6 +35,7 @@ export async function createMember(db: Db, body: unknown): Promise<Member> {
 
 export async function updateMember(db: Db, id: number, body: unknown): Promise<Member> {
   const input = parse(memberPatch, body)
+  if (Object.keys(input).length === 0) throw new HttpError(400, '更新する項目がありません')
   try {
     const [row] = await db.update(members).set(input).where(eq(members.id, id)).returning()
     if (!row) throw notFound('メンバー', id)

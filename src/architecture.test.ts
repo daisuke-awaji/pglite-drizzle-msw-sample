@@ -10,14 +10,20 @@ const raw = import.meta.glob<string>(['./**/*.ts', './**/*.tsx', '!./**/*.d.ts']
   eager: true,
 })
 
+// import ... from '...'、export ... from '...'、副作用だけの import '...'、動的な import('...') を拾う
+const IMPORT = /^\s*(?:import|export)\s[^'"]*?from\s+['"]([^'"]+)['"]|^\s*import\s+['"]([^'"]+)['"]|\bimport\(\s*['"]([^'"]+)['"]\s*\)/gm
+
 const sources = Object.entries(raw).map(([path, code]) => ({
   path: path.replace(/^\.\//, ''),
-  imports: [...code.matchAll(/^\s*(?:import|export)\s[^'"]*?from\s+['"]([^'"]+)['"]/gm)].map((m) => m[1]!),
+  code,
+  imports: [...code.matchAll(IMPORT)].map((m) => (m[1] ?? m[2] ?? m[3])!),
 }))
 
-test('src/ のファイルを読めている', () => {
+test('src/ のファイルと import を読めている', () => {
   expect(sources.length).toBeGreaterThan(40)
-  expect(sources.map((s) => s.path)).toContain('server/tasks.ts')
+  const main = sources.find((s) => s.path === 'main.tsx')!
+  // 副作用だけの import と動的 import も拾えている
+  expect(main.imports).toEqual(expect.arrayContaining(['./agent', './mocks/browser', './router']))
 })
 
 const isTest = (path: string) => /\.test\.tsx?$/.test(path) || path.startsWith('test/')
@@ -34,6 +40,17 @@ describe('層の依存', () => {
     expect(
       violations(/^server\//, /^(react|react-dom|react-router|msw|@ui-sdk|lucide-react|zustand|@electric-sql\/pglite)|\.\.\/(api|routes|components|stores|mocks)\/|client\.browser/),
     ).toEqual([])
+  })
+
+  test('src/server にはプロトタイプ専用の処理（全消去・サンプルデータ）を置かない（本番のバックエンドに持っていくため）', () => {
+    const devOnly = prod
+      .filter((s) => s.path.startsWith('server/') && /\btruncate\b|_reset|_debug|seed/i.test(s.code))
+      .map((s) => s.path)
+    expect(devOnly).toEqual([])
+  })
+
+  test('src/db は接続とスキーマだけを持ち、サーバー層やモックを知らない', () => {
+    expect(violations(/^db\//, /\.\.\/(server|mocks|api|routes|components|stores)\//)).toEqual([])
   })
 
   test('src/shared は Zod 以外に依存しない（サーバーと画面の両方から使う）', () => {

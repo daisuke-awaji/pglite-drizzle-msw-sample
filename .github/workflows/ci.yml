@@ -25,6 +25,8 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
+      - name: 本番向け（VITE_USE_MOCK=false）のビルドに開発用の機能が残っていないか
+        run: npm run check:no-mock-build
       - run: npm run test:coverage
       - name: カバレッジのレポートを残す
         if: always()

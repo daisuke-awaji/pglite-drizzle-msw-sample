@@ -2,7 +2,7 @@ import { sql } from 'drizzle-orm'
 import { comments, members, projectMembers, projects, tags, tasks, taskTags } from '../db/schema'
 import { addDays } from '../shared/dates'
 import type { Priority, TaskStatus } from '../shared/enums'
-import type { Db } from './core'
+import type { Db } from '../server/core'
 
 const MEMBERS = [
   { name: '相沢 愛子', email: 'aiko@example.com', title: 'プロダクトマネージャー' },
@@ -95,63 +95,83 @@ const COMMENTS: [projectIndex: number, taskIndex: number, author: number, body: 
   [2, 2, 6, '読み取り専用ロールを追加する案を検討しています。'],
 ]
 
+type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
+
+// プロトタイプ専用のサンプルデータ。本番のバックエンドには持っていかない（src/server には置かない）
+
 export async function seed(db: Db, today = new Date()): Promise<void> {
-  await db.transaction(async (tx) => {
-    const memberRows = await tx.insert(members).values(MEMBERS).returning({ id: members.id })
-    const tagRows = await tx.insert(tags).values(TAGS.map((name) => ({ name }))).returning({ id: tags.id })
-    const memberId = (i: number) => memberRows[i]!.id
-    const taskIds: number[][] = []
+  await db.transaction((tx) => insertSampleData(tx, today))
+}
 
-    for (const p of PROJECTS) {
-      const [project] = await tx
-        .insert(projects)
-        .values({ name: p.name, description: p.description, color: p.color, status: p.status ?? 'active' })
-        .returning({ id: projects.id })
-      await tx.insert(projectMembers).values(p.members.map((m) => ({ projectId: project!.id, memberId: memberId(m) })))
+async function insertSampleData(tx: Tx, today: Date): Promise<void> {
+  const memberRows = await tx.insert(members).values(MEMBERS).returning({ id: members.id })
+  const tagRows = await tx.insert(tags).values(TAGS.map((name) => ({ name }))).returning({ id: tags.id })
+  const memberId = (i: number) => memberRows[i]!.id
+  const taskIds: number[][] = []
 
-      const rows = await tx
-        .insert(tasks)
-        .values(
-          p.tasks.map(([title, status, priority, assignee, due], i) => ({
-            projectId: project!.id,
-            title,
-            status,
-            priority,
-            assigneeId: assignee === null ? null : memberId(assignee),
-            dueDate: due === null ? null : addDays(today, due),
-            // 日時をずらして「更新が新しい順」で並びに差が出るようにする
-            createdAt: new Date(today.getTime() - (i + 24) * 3_600_000),
-            updatedAt: new Date(today.getTime() - i * 3_600_000),
-          })),
-        )
-        .returning({ id: tasks.id })
-      taskIds.push(rows.map((r) => r.id))
+  for (const p of PROJECTS) {
+    const [project] = await tx
+      .insert(projects)
+      .values({ name: p.name, description: p.description, color: p.color, status: p.status ?? 'active' })
+      .returning({ id: projects.id })
+    await tx.insert(projectMembers).values(p.members.map((m) => ({ projectId: project!.id, memberId: memberId(m) })))
 
-      const links = p.tasks.flatMap(([, , , , , tagIdx], i) =>
-        tagIdx.map((t) => ({ taskId: rows[i]!.id, tagId: tagRows[t]!.id })),
+    const rows = await tx
+      .insert(tasks)
+      .values(
+        p.tasks.map(([title, status, priority, assignee, due], i) => ({
+          projectId: project!.id,
+          title,
+          status,
+          priority,
+          assigneeId: assignee === null ? null : memberId(assignee),
+          dueDate: due === null ? null : addDays(today, due),
+          // 日時をずらして「更新が新しい順」で並びに差が出るようにする
+          createdAt: new Date(today.getTime() - (i + 24) * 3_600_000),
+          updatedAt: new Date(today.getTime() - i * 3_600_000),
+        })),
       )
-      if (links.length > 0) await tx.insert(taskTags).values(links)
-    }
+      .returning({ id: tasks.id })
+    taskIds.push(rows.map((r) => r.id))
 
-    await tx.insert(comments).values(
-      COMMENTS.map(([p, t, author, body], i) => ({
-        taskId: taskIds[p]![t]!,
-        authorId: memberId(author),
-        body,
-        createdAt: new Date(today.getTime() - (COMMENTS.length - i) * 1_800_000),
-      })),
+    const links = p.tasks.flatMap(([, , , , , tagIdx], i) =>
+      tagIdx.map((t) => ({ taskId: rows[i]!.id, tagId: tagRows[t]!.id })),
     )
+    if (links.length > 0) await tx.insert(taskTags).values(links)
+  }
+
+  await tx.insert(comments).values(
+    COMMENTS.map(([p, t, author, body], i) => ({
+      taskId: taskIds[p]![t]!,
+      authorId: memberId(author),
+      body,
+      createdAt: new Date(today.getTime() - (COMMENTS.length - i) * 1_800_000),
+    })),
+  )
+}
+
+const TABLES = [comments, taskTags, tasks, projectMembers, projects, tags, members]
+
+/**
+ * どの表も空のとき（初めて開いたとき）だけサンプルデータを入れる。
+ * members だけを見ると、利用者がメンバーを全員消したあとの再読み込みで seed がタグの一意制約に当たり、
+ * 起動できなくなる（データを消すしかなくなる）ので、全部の表を見る
+ */
+export async function seedIfEmpty(db: Db, today = new Date()): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    const counts = await Promise.all(TABLES.map((t) => tx.$count(t)))
+    if (counts.some((n) => n > 0)) return false
+    await insertSampleData(tx, today)
+    return true
   })
 }
 
-export async function isEmpty(db: Db): Promise<boolean> {
-  const [row] = await db.select({ n: sql<number>`count(*)`.mapWith(Number) }).from(members)
-  return (row?.n ?? 0) === 0
-}
-
-export async function resetData(db: Db): Promise<void> {
-  await db.execute(
-    sql`truncate ${comments}, ${taskTags}, ${tasks}, ${projectMembers}, ${projects}, ${tags}, ${members} restart identity cascade`,
-  )
-  await seed(db)
+/** すべて消してサンプルデータに戻す。途中で失敗しても空の DB が残らないよう、1 つのトランザクションで行う */
+export async function resetData(db: Db, today = new Date()): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx.execute(
+      sql`truncate ${comments}, ${taskTags}, ${tasks}, ${projectMembers}, ${projects}, ${tags}, ${members} restart identity cascade`,
+    )
+    await insertSampleData(tx, today)
+  })
 }

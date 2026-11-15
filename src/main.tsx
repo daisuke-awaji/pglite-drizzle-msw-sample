@@ -21,6 +21,8 @@ window.addEventListener('unhandledrejection', (event) => {
 async function main() {
   // 既定ではモック API（MSW + PGlite）をブラウザ内で起動する。
   // 本番の API につなぐときは VITE_USE_MOCK=false でビルドすると、PGlite もバンドルに含まれない。
+  // src/lib/env.ts の USES_MOCK_API と同じ判定だが、ここは import.meta.env を直接書く。
+  // 別ファイルの定数を通すと、条件は消えても動的 import の先（PGlite・MSW の約 16 MB）がビルドに出力されてしまう
   if (import.meta.env.VITE_USE_MOCK !== 'false') {
     const { startMockApi } = await import('./mocks/browser')
     await startMockApi()

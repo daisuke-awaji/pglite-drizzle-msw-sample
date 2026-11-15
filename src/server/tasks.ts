@@ -201,22 +201,33 @@ export async function updateTask(db: Db, id: number, body: unknown): Promise<Tas
 }
 
 export async function deleteTask(db: Db, id: number): Promise<void> {
-  const deleted = await db.delete(tasks).where(eq(tasks.id, id)).returning({ projectId: tasks.projectId })
-  if (deleted.length === 0) throw notFound('タスク', id)
-  await db.update(projects).set({ updatedAt: new Date() }).where(eq(projects.id, deleted[0]!.projectId))
+  await db.transaction(async (tx) => {
+    const [deleted] = await tx.delete(tasks).where(eq(tasks.id, id)).returning({ projectId: tasks.projectId })
+    if (!deleted) throw notFound('タスク', id)
+    await touchProject(tx, deleted.projectId)
+  })
 }
 
+// 投稿者は、そのタスクのプロジェクトのメンバーに限る（担当者と同じ業務ルール）。
+// 認証を入れたら、投稿者はクライアントから受け取らず、ログイン中の利用者にすること
 export async function addComment(db: Db, taskId: number, body: unknown): Promise<Comment> {
   const input = parse(commentInput, body)
-  const [task] = await db.select({ id: tasks.id }).from(tasks).where(eq(tasks.id, taskId))
-  if (!task) throw notFound('タスク', taskId)
-  const [author] = await db
-    .select({ id: members.id, name: members.name })
-    .from(members)
-    .where(eq(members.id, input.authorId))
-  if (!author) throw new HttpError(400, '投稿者が見つかりません', { authorId: ['投稿者を選んでください'] })
-  const [row] = await db.insert(comments).values({ ...input, taskId }).returning()
-  return toComment({ ...row!, author })
+  return db.transaction(async (tx) => {
+    const [task] = await tx.select({ projectId: tasks.projectId }).from(tasks).where(eq(tasks.id, taskId))
+    if (!task) throw notFound('タスク', taskId)
+    const [author] = await tx
+      .select({ id: members.id, name: members.name })
+      .from(projectMembers)
+      .innerJoin(members, eq(members.id, projectMembers.memberId))
+      .where(and(eq(projectMembers.projectId, task.projectId), eq(projectMembers.memberId, input.authorId)))
+    if (!author) {
+      throw new HttpError(400, '投稿者はプロジェクトのメンバーから選んでください', {
+        authorId: ['投稿者はプロジェクトのメンバーから選んでください'],
+      })
+    }
+    const [row] = await tx.insert(comments).values({ ...input, taskId }).returning()
+    return toComment({ ...row!, author })
+  })
 }
 
 export async function deleteComment(db: Db, id: number): Promise<void> {
