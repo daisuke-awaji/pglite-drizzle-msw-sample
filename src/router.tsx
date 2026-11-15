@@ -21,6 +21,7 @@ export function createRouter() {
         loader: root.loader,
         Component: root.Component,
         HydrateFallback: root.HydrateFallback,
+        ErrorBoundary: root.RootError,
         children: [
           {
             // エラーはここで受け止めて、サイドバーを残したまま中身だけ差し替える

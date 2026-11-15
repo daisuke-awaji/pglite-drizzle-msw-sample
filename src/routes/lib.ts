@@ -8,7 +8,7 @@ import { fieldErrorsOf, formToObject, type FieldErrors } from '../shared/schemas
 
 export type ActionResult =
   | { ok: true; intent: string; id?: number }
-  | { ok: false; intent: string; error: string; fieldErrors?: FieldErrors }
+  | { ok: false; intent: string; error: string; fieldErrors?: FieldErrors; retryable?: boolean }
 
 export function idParam(params: Params, key: string): number {
   const id = Number(params[key])
@@ -16,12 +16,24 @@ export function idParam(params: Params, key: string): number {
   return id
 }
 
-// loader で API の 404 をそのままルートの 404 にする（ErrorBoundary が表示する）
+// loader で API のエラーをルートのエラーにする（ErrorBoundary が表示する）。
+// - 404 などやり直しても変わらないエラーは、状態コード付きのルートのエラーにする
+// - 通信断や 5xx など、やり直せば直りうるエラーは ApiError のまま投げ、画面に「再試行」を出す
 export async function load<T>(promise: Promise<T>): Promise<T> {
   try {
     return await promise
   } catch (e) {
-    if (e instanceof ApiError) throw data(e.message, { status: e.status })
+    if (e instanceof ApiError && e.kind === 'http' && !e.retryable) throw data(e.message, { status: e.status })
+    throw e
+  }
+}
+
+/** 失敗しても画面の一部だけをエラー表示にしたいときに使う（設定画面など） */
+export async function settle<T>(promise: Promise<T>): Promise<{ ok: true; value: T } | { ok: false; error: ApiError }> {
+  try {
+    return { ok: true, value: await promise }
+  } catch (e) {
+    if (e instanceof ApiError) return { ok: false, error: e }
     throw e
   }
 }
@@ -42,11 +54,12 @@ export function validate<S extends z.ZodType>(
   }
 }
 
-export function fail(intent: string, error: string, status = 400, fieldErrors?: FieldErrors) {
-  return data<ActionResult>({ ok: false, intent, error, fieldErrors }, { status })
+export function fail(intent: string, error: string, status = 400, fieldErrors?: FieldErrors, retryable?: boolean) {
+  return data<ActionResult>({ ok: false, intent, error, fieldErrors, retryable }, { status })
 }
 
-// API を呼び、成功ならトーストを出す。失敗（400/404/409）は画面に返してフォームに表示する
+// API を呼び、成功ならトーストを出す。失敗は画面に返してフォームに表示する。
+// 項目ごとのエラーがないとき（通信断・権限・競合など）は、フォームの外でも気づけるようトーストも出す
 export async function run(
   intent: string,
   fn: () => Promise<unknown>,
@@ -60,7 +73,8 @@ export async function run(
   } catch (e) {
     if (e instanceof ApiError) {
       if (!e.fieldErrors) toast.error(e.message)
-      return fail(intent, e.message, e.status, e.fieldErrors)
+      // 通信断のときは状態コードがないので、「一時的に使えない」の 503 として返す
+      return fail(intent, e.message, e.status || 503, e.fieldErrors, e.retryable)
     }
     throw e
   }

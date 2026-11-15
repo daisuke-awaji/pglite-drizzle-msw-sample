@@ -12,18 +12,22 @@ import { Field, FieldLabel } from '@ui-sdk/react/field'
 import { SegmentedControl, SegmentedControlIndicator, SegmentedControlItem } from '@ui-sdk/react/segmented-control'
 import { Switch, SwitchThumb } from '@ui-sdk/react/switch'
 import { PlusIcon, XIcon } from 'lucide-react'
-import { useFetcher, useLoaderData } from 'react-router'
+import { useFetcher, useLoaderData, useRevalidator } from 'react-router'
 import { api } from '../api/client'
 import { PageHeader } from '../components/display'
+import { InlineError } from '../components/error-view'
 import { SelectField, TextField } from '../components/fields'
 import { tagInput } from '../shared/schemas'
-import { usePreferences, type Latency, type Theme } from '../stores/preferences'
-import { errorsFor, intentOf, load, run, unknownIntent, validate, type ActionResult } from './lib'
+import type { DbInfo, TagListItem } from '../shared/types'
+import { usePreferences, type Fault, type Latency, type Theme } from '../stores/preferences'
+import { errorsFor, intentOf, run, settle, unknownIntent, validate, type ActionResult } from './lib'
 
 export const handle = { crumb: () => '設定' }
 
+// 設定画面は「障害シミュレーションを止める」場所でもあるので、API が失敗しても画面全体はエラーにしない。
+// 読めなかった部分だけをその場でエラー表示にする
 export async function loader({ request }: { request: Request }) {
-  const [tags, db] = await Promise.all([load(api.listTags(request.signal)), load(api.dbInfo(request.signal))])
+  const [tags, db] = await Promise.all([settle(api.listTags(request.signal)), settle(api.dbInfo(request.signal))])
   return { tags, db }
 }
 
@@ -44,6 +48,13 @@ export async function action({ request }: { request: Request }) {
       return unknownIntent(intent)
   }
 }
+
+const faultItems: { value: Fault; label: string }[] = [
+  { value: 'none', label: 'なし（正常）' },
+  { value: 'error-writes', label: '保存だけ失敗させる（503）' },
+  { value: 'error-all', label: 'すべて失敗させる（503）' },
+  { value: 'offline', label: 'サーバーにつながらない' },
+]
 
 const latencyItems = [
   { value: '0', label: 'なし' },
@@ -66,7 +77,7 @@ export function Component() {
 
 // この端末だけの設定。Zustand の persist で localStorage に保存される
 function Preferences() {
-  const { theme, sidebarCollapsed, latency, setTheme, toggleSidebar, setLatency } = usePreferences()
+  const { theme, sidebarCollapsed, latency, fault, setTheme, toggleSidebar, setLatency, setFault } = usePreferences()
   return (
     <section className="card form">
       <h2>表示</h2>
@@ -79,7 +90,7 @@ function Preferences() {
           <SegmentedControlItem value="dark">ダーク</SegmentedControlItem>
         </SegmentedControl>
       </Field>
-      <Field className="field-row">
+      <Field className="field-row desktop-only">
         <Switch checked={sidebarCollapsed} onCheckedChange={toggleSidebar}>
           <SwitchThumb />
         </Switch>
@@ -93,12 +104,33 @@ function Preferences() {
         onValueChange={(v) => v && setLatency(Number(v) as Latency)}
         description="モック API の応答を遅らせて、読み込み中の表示や楽観的更新を確かめます"
       />
+      <SelectField
+        label="障害シミュレーション"
+        name="fault"
+        items={faultItems}
+        value={fault}
+        onValueChange={(v) => v && setFault(v as Fault)}
+        description="エラー表示と再試行を確かめます。この設定は保存されず、ページを読み込み直すと「なし」に戻ります"
+      />
     </section>
   )
 }
 
 function Tags() {
-  const { tags } = useLoaderData<typeof loader>()
+  const { tags: result } = useLoaderData<typeof loader>()
+  const revalidator = useRevalidator()
+  if (!result.ok) {
+    return (
+      <section className="card form">
+        <h2>タグ</h2>
+        <InlineError error={result.error} onRetry={() => revalidator.revalidate()} />
+      </section>
+    )
+  }
+  return <TagList tags={result.value} />
+}
+
+function TagList({ tags }: { tags: TagListItem[] }) {
   const fetcher = useFetcher<ActionResult>()
   const errors = errorsFor(fetcher.data, 'create-tag')
   return (
@@ -148,13 +180,13 @@ const STORAGES = [
 ]
 
 function Storage() {
-  const { db } = useLoaderData<typeof loader>()
-  const fetcher = useFetcher<ActionResult>()
+  const { db: result } = useLoaderData<typeof loader>()
   return (
     <section className="card form span-2">
       <h2>データの保存先</h2>
       <div className="table-wrap">
-        <table className="table">
+        <table className="table table-stack">
+          <caption className="sr-only">データの保存先</caption>
           <thead>
             <tr>
               <th scope="col">保存先</th>
@@ -166,17 +198,27 @@ function Storage() {
           <tbody>
             {STORAGES.map((s) => (
               <tr key={s.where}>
-                <td>{s.where}</td>
-                <td>
-                  <code>{s.key}</code>
+                <td className="cell-primary">{s.where}</td>
+                <td data-label="キー">
+                  <code className="cell-break">{s.key}</code>
                 </td>
-                <td>{s.what}</td>
-                <td className="muted">{s.via}</td>
+                <td data-label="内容">{s.what}</td>
+                <td className="muted" data-label="経路">
+                  {s.via}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+      {result.ok ? <DbMeta db={result.value} /> : <InlineError error={result.error} />}
+      <ResetData />
+    </section>
+  )
+}
+
+function DbMeta({ db }: { db: DbInfo }) {
+  return (
       <dl className="meta">
         <div>
           <dt>データベース</dt>
@@ -195,6 +237,12 @@ function Storage() {
           </dd>
         </div>
       </dl>
+  )
+}
+
+function ResetData() {
+  const fetcher = useFetcher<ActionResult>()
+  return (
       <AlertDialog
         onOpenChange={(open, details) => {
           if (!open && details.returnValue === 'confirm') fetcher.submit({ intent: 'reset' }, { method: 'post' })
@@ -215,6 +263,5 @@ function Storage() {
           </div>
         </AlertDialogContent>
       </AlertDialog>
-    </section>
   )
 }

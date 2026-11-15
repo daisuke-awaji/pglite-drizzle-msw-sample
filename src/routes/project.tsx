@@ -8,7 +8,13 @@ import { idParam, load } from './lib'
 export const handle = {
   crumb: (data: unknown) => {
     const project = data as ProjectDetail | undefined
-    return project && [{ label: 'プロジェクト', to: '/projects' }, { label: project.name, to: `/projects/${project.id}` }]
+    // プロジェクト名の項目はタスクのタブへ転送されるだけなので、狭い画面の「戻る」はプロジェクト一覧へ向ける
+    return (
+      project && [
+        { label: 'プロジェクト', to: '/projects' },
+        { label: project.name, to: `/projects/${project.id}`, back: false as const },
+      ]
+    )
   },
 }
 

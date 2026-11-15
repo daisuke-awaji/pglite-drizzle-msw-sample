@@ -53,6 +53,7 @@ import { api } from '../api/client'
 import { confirmDanger } from '../components/confirm-danger'
 import { Assignee, DueDate, EmptyState, PriorityLabel, StatusLabel } from '../components/display'
 import { DateField, MultiComboboxField, SelectField, TextareaField, TextField } from '../components/fields'
+import { FilterPanel } from '../components/filter-panel'
 import { SearchParamInput } from '../components/search-param-input'
 import {
   PRIORITIES,
@@ -125,12 +126,15 @@ export function Component() {
   const view = usePreferences((s) => s.taskView)
   const setView = usePreferences((s) => s.setTaskView)
   const revalidator = useRevalidator()
-  const filtered = [...new URLSearchParams(location.search).keys()].some((k) => k !== 'sort' && k !== 'page')
+  const [searchParams] = useSearchParams()
+  const activeFilters = ['status', 'assignee', 'tag'].filter((k) => searchParams.has(k)).length
+  const filtered = activeFilters > 0 || searchParams.has('q')
 
   return (
     <div className="stack">
       <div className="toolbar">
         <SearchParamInput label="タスクを検索" placeholder="タイトルで検索" />
+        <FilterPanel activeCount={activeFilters}>
         <ParamSelect
           label="状態で絞り込む"
           param="status"
@@ -155,6 +159,7 @@ export function Component() {
           param="sort"
           items={TASK_SORTS.map((s) => ({ value: s === 'updated' ? '' : s, label: SORT_LABEL[s] }))}
         />
+        </FilterPanel>
         <div className="toolbar-end">
           <SegmentedControl
             aria-label="表示形式"
@@ -202,6 +207,7 @@ function ParamSelect({ label, param, items }: { label: string; param: string; it
   return (
     <Select
       items={items}
+      presentation="auto"
       value={value}
       onValueChange={(next) =>
         setParams((prev) => {
@@ -294,7 +300,8 @@ function useOptimisticTask(task: TaskListItem) {
 function TaskTable({ tasks }: { tasks: TaskListItem[] }) {
   return (
     <div className="table-wrap">
-      <table className="table">
+      <table className="table table-stack">
+        <caption className="sr-only">タスクの一覧</caption>
         <thead>
           <tr>
             <th scope="col" className="col-check">
@@ -326,7 +333,7 @@ function TaskRow({ task }: { task: TaskListItem }) {
   if (deleting) return null
   return (
     <tr data-status={status}>
-      <td className="col-check">
+      <td className="col-check" data-label="完了">
         <Checkbox
           aria-label={`「${task.title}」を完了にする`}
           checked={status === 'done'}
@@ -335,7 +342,7 @@ function TaskRow({ task }: { task: TaskListItem }) {
           <CheckboxIndicator />
         </Checkbox>
       </td>
-      <td className="col-title">
+      <td className="col-title cell-primary">
         <Link to={`/tasks/${task.id}`}>{task.title}</Link>
         {task.commentCount > 0 && (
           <span className="comment-count muted" title={`コメント ${task.commentCount} 件`}>
@@ -345,19 +352,19 @@ function TaskRow({ task }: { task: TaskListItem }) {
           </span>
         )}
       </td>
-      <td>
+      <td data-label="ステータス">
         <StatusLabel status={status} />
       </td>
-      <td>
+      <td data-label="優先度">
         <PriorityLabel priority={task.priority} />
       </td>
-      <td>
+      <td data-label="担当者">
         <Assignee member={task.assignee} />
       </td>
-      <td>
+      <td data-label="期限" data-empty={task.dueDate ? undefined : ''}>
         <DueDate date={task.dueDate} done={status === 'done'} />
       </td>
-      <td>
+      <td data-label="タグ" data-empty={task.tags.length > 0 ? undefined : ''}>
         <Tags tags={task.tags} />
       </td>
       <td className="col-actions">
@@ -394,6 +401,7 @@ function TaskMenu({
   const navigate = useNavigate()
   return (
     <Menu
+      presentation="auto"
       onAction={(value) => {
         if (value === 'open') navigate(`/tasks/${task.id}`)
         else if (value === 'delete') return remove()

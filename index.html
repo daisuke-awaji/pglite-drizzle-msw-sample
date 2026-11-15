@@ -3,11 +3,28 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="description" content="PGlite + Drizzle + MSW で、ブラウザだけで動くプロジェクト管理のスターターキット" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#fbfbfb" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0b0b0b" />
     <title>Starter Kit</title>
+    <style>
+      /* JS と CSS が読み込まれるまでの最初の表示。ここだけはインラインで持つ */
+      .boot-placeholder {
+        display: grid;
+        place-items: center;
+        min-height: 100dvh;
+        font: 14px/1.5 system-ui, -apple-system, 'Hiragino Sans', 'Noto Sans JP', sans-serif;
+        color: #666;
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div class="boot-placeholder" role="status">読み込んでいます…</div>
+    </div>
+    <noscript>このアプリを使うには JavaScript を有効にしてください。</noscript>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

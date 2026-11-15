@@ -1,7 +1,9 @@
 import { Avatar, AvatarFallback } from '@ui-sdk/react/avatar'
 import { Progress, ProgressIndicator, ProgressTrack } from '@ui-sdk/react/progress'
 import {
+  AlertCircleIcon,
   CircleCheckIcon,
+  ClockIcon,
   CircleDashedIcon,
   CircleDotIcon,
   SignalHighIcon,
@@ -137,6 +139,9 @@ export function DueDate({ date, done = false }: { date: string | null; done?: bo
   const state = done ? undefined : date < t ? 'overdue' : date === t ? 'today' : undefined
   return (
     <time className="due" dateTime={date} data-state={state}>
+      {/* 色だけに頼らず、形でも期限切れ・今日までが分かるようにする（WCAG 1.4.1） */}
+      {state === 'overdue' && <AlertCircleIcon aria-hidden="true" />}
+      {state === 'today' && <ClockIcon aria-hidden="true" />}
       {dateFormat.format(new Date(`${date}T00:00:00`))}
       {state === 'overdue' && <span className="sr-only">（期限切れ）</span>}
       {state === 'today' && <span className="sr-only">（今日まで）</span>}
