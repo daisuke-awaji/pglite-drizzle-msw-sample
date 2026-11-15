@@ -1,16 +1,16 @@
-# 本番環境（AWS）の計画
+# 本番環境（AWS）
 
-このキットを顧客案件の本番に載せるときの、AWS の構成・デプロイの手順・マイグレーション（ALTER）の流し方・運用の計画です。
+このキットを顧客案件の本番に載せるときの、AWS の構成・デプロイの手順・マイグレーション（ALTER）の流し方・運用です。
 
 | 項目 | 内容 |
 |---|---|
-| 状態 | **計画**（AWS 側はまだ作っていません。ここにある構成はまだどこにも構築していません） |
+| 状態 | **実装済み・AWS へは未デプロイ**。サーバー・CDK・デプロイの手順・認証・監視・運用のスクリプトはリポジトリにあり、テストと CI で確かめてある。AWS の上で確かめることは[AWS の上でまだ確かめていないこと](#aws-の上でまだ確かめていないこと)にまとめた |
 | 最終更新 | 2026-11-15 |
 | 前提 | リージョンは東京（ap-northeast-1）。画面は今の SPA、サーバーは `src/server` をそのまま使う |
 | API の実行環境 | **AWS Lambda Web Functions**。制約に当たって載らないものだけを ECS on Fargate で動かす（[Fargate を使うとき](#fargate-を使うとき)） |
-| このリポジトリで済んでいるもの | 構成図、この計画、マイグレーションの検査（`npm run check:migrations`、CI で実行） |
+| リポジトリにあるもの | `server/`（API の入口・マイグレーションの実行役・DB の利用者・ログイン）、`infra/`（CDK と、デプロイ・運用のスクリプト）、`.github/workflows/deploy*.yml`、`src/auth`（画面のログイン）、`scripts/build-server.mjs`・`load-test.mjs` |
 
-目次: [構成](#構成) / [設計の判断](#設計の判断) / [Fargate を使うとき](#fargate-を使うとき) / [環境](#環境) / [リポジトリに足すもの](#リポジトリに足すもの) / [デプロイ](#デプロイ) / [マイグレーション](#マイグレーション) / [運用](#運用) / [進め方](#進め方) / [未確定のこと](#未確定のこと)
+目次: [構成](#構成) / [設計の判断](#設計の判断) / [Fargate を使うとき](#fargate-を使うとき) / [環境](#環境) / [リポジトリの中身](#リポジトリの中身) / [認証と認可](#認証と認可) / [デプロイ](#デプロイ) / [マイグレーション](#マイグレーション) / [運用](#運用) / [進め方](#進め方) / [AWS の上でまだ確かめていないこと](#aws-の上でまだ確かめていないこと) / [未確定のこと](#未確定のこと)
 
 ## 構成
 
@@ -46,22 +46,22 @@
 | リリースと戻し方 | revision と endpoint の重みはデプロイの手順（AWS CLI）で動かす。`next`（確認用）で確かめてから `live` を切り替え、1 つ前の revision を `next` に残す | 戻すのが「重みを前の revision に戻す」1 回の操作で済み、作り直しを待たない（数秒）。公式のベストプラクティスも、本番は重みを手で動かし、戻し先の revision を endpoint に残すこと | CDK の `WebFunction`（L2）だけで出す: デプロイのたびに前の revision を消すので、戻すには前のコードで作り直す（数分）。重みを CloudFormation で持つと、次の `cdk deploy` が手で戻した重みを上書きする |
 | IaC | AWS CDK（TypeScript） | アプリと同じ言語で書け、型で間違いに気づける。Web Function・Network Connector・リソースポリシーも CloudFormation のリソースがある | Terraform: チームに知見があるなら差し替えてよい |
 | CI/CD | GitHub Actions（OIDC で AWS に入る） | 今の CI をそのまま伸ばせる。長期のアクセスキーを持たない | CodePipeline: GitHub の承認・レビューと二重になる |
-| 認証 | Phase 4 で Amazon Cognito | 画面のログインは Cognito のマネージドログイン、API は JWT を検証する（Hono のミドルウェア） | endpoint の `IamAuth` で利用者を見分ける: 利用者ごとの IAM の資格情報が要り、画面から扱いにくい（`IamAuth` は CloudFront を通ったかの確認だけに使う） |
+| 認証 | Amazon Cognito（[認証と認可](#認証と認可)） | 画面のログインは Cognito のマネージドログイン（認可コード + PKCE）、API は ID トークンを検証し、メールアドレスでメンバーにつなぐ | endpoint の `IamAuth` で利用者を見分ける: 利用者ごとの IAM の資格情報が要り、画面から扱いにくい（`IamAuth` は CloudFront を通ったかの確認だけに使う） |
 
-> **認証を入れる前に、本番のデータを載せて公開しないでください。** 今の API には「誰が呼んだか」がありません（README の「まだ入っていないもの」）。
-> 認証が間に合わないときは、WAF で社内の IP アドレスだけを通すなど、入口で絞ってから使い始めます。
+> **prod は認証なしでは動きません**（`server/config.ts` が `AUTH_MODE=none` を断り、CDK も prod の認証なしを合成しない）。
+> 公開する範囲を絞るときは、WAF で許す IP アドレスを決めます（`-c allowedCidrs.prod=203.0.113.0/24`。この CIDR 以外は、数えるだけの期間でも止める）。
 
 Web Functions の主な制約（[Lambda のクォータ](https://docs.aws.amazon.com/lambda/latest/dg/gettingstarted-limits.html)）と、このアプリでの扱い:
 
 | 制約 | 値 | このアプリ |
 |---|---|---|
-| ランタイム | Node.js 24（`nodejs24.x`）、Arm64 のみ | 既存のテスト 130 件が Node 24.22 で通ることを確かめた。CI も Phase 1 で 22 から 24 に上げる。ネイティブモジュールは使っていない（`pg` は JS だけ） |
+| ランタイム | Node.js 24（`nodejs24.x`）、Arm64 のみ | CI・`.nvmrc`・engines を 24 にした。ネイティブモジュールは使っていない（`pg` は JS だけ） |
 | 1 リクエストの時間 | 既定 30 秒（3〜900 秒） | 30 秒のまま。DB 側でもアプリ用の利用者に `statement_timeout = '20s'` を付け、リクエストより先に SQL を止める |
 | 1 つの実行環境 | 2 vCPU・2 GB、同時 64 リクエスト（1〜128）、`/tmp` 512 MB | I/O が中心で足りる。CPU を長く使う処理（大きなファイルの生成など）は入れない |
-| 起動 | 10 秒以内に `AWS_LAMBDA_HTTP_ENDPOINT` で listen する | DB には最初のリクエストでつなぐ。試作で 0.15 秒（後述） |
-| 止まるとき | `SIGTERM` のあと 1 秒 | 接続プールを閉じて終わる。試作で 12 ms。閉じきれなかった接続は DB 側の `idle_session_timeout` が消す |
+| 起動 | 10 秒以内に `AWS_LAMBDA_HTTP_ENDPOINT` で listen する | DB には最初のリクエストでつなぐ。ビルドした zip で 0.16〜0.19 秒（手元で 5 回） |
+| 止まるとき | `SIGTERM` のあと 1 秒 | 接続プールを閉じて終わる。ビルドした zip で 7〜13 ms（手元で 5 回）。閉じきれなかった接続は DB 側の `idle_session_timeout` が消す |
 | 状態 | 実行環境はいつ消えてもよい。同じ利用者のリクエストが同じ環境に来るとは限らない | `src/server` はモジュールの変数に状態を持たない（確かめた）。状態はすべて DB |
-| コード | S3 の zip（展開後 512 MB まで）。コンテナイメージは使えない | esbuild で 1 ファイル（試作で 1.7 MB）にまとめる |
+| コード | S3 の zip（展開後 512 MB まで）。コンテナイメージは使えない | esbuild で 1 ファイルにまとめる。`api.zip` は 1.3 MB（展開 6.2 MB。ソースマップと RDS の CA を含む） |
 | 通信 | HTTP/1.1。WebSocket は使えない（SSE は使える）。endpoint は常にインターネットから見える（PrivateLink は使えない） | WebSocket は使っていない。入口を閉じたネットワークだけにする必要が出たら、[Fargate に切り替える](#fargate-を使うとき) |
 | VPC | Network Connector は `HomeRegion` の endpoint だけ | 東京だけで動かす（マルチリージョンにしない） |
 | 規模 | endpoint あたり 10,000 RPS、アカウント・リージョンあたり Arm64 の vCPU 2,000（実行環境 1,000 個分） | 十分。実行環境の上限（`maxEnvironments`）は DB の接続数から決める（[環境](#環境)） |
@@ -104,83 +104,123 @@ AWS アカウントを環境ごとに分けます（間違えて本番を壊さ�
 - 自動で一時停止した Aurora は、最初の接続から 15 秒ほどで戻ります。dev / stg では接続のタイムアウトを 15 秒より長くし、接続に失敗したらやり直すようにします。
 - 本番の最小 ACU を 0 にしないのは、朝一番の利用者を 15 秒待たせないためです。
 
-## リポジトリに足すもの
-
-今のリポジトリには `src/server`（業務ロジック・ルート表・HTTP の境界）があり、サーバーの入口・ビルド・IaC はまだありません。Phase 1〜3 で次を足します。
+## リポジトリの中身
 
 ```
-server/
-  index.ts          Web Function の入口。AWS_LAMBDA_HTTP_ENDPOINT の host:port で listen し、SIGTERM で接続プールを閉じる
-  app.ts            Hono に src/server/routes.ts を登録する（README の例と同じ）。/api/readyz を足す
-  db.ts             node-postgres の接続プール。パスワードは最初のリクエストで Secrets Manager から読む（後述）
-  migrate.ts        マイグレーションの実行役（Lambda 関数のハンドラー。ローカルと Fargate 用に CLI としても動く）。事前 SQL（pre）も流せる
-  log.ts            1 行 1 JSON のログ（ルート・状態コード・所要時間・ビルドの SHA。本文や個人情報は出さない）
+server/                 本番の API（Lambda Web Function）とマイグレーションの実行役（Lambda 関数）。src/server をそのまま載せる
+  index.ts              Web Function の入口（zip の index.js）。AWS_LAMBDA_HTTP_ENDPOINT の host:port で listen し、SIGTERM で 0.5 秒だけ待って終わる
+  app.ts                Hono に src/server/routes.ts を登録する。/api/readyz、本文の上限（413）、1 リクエスト 1 行のログ、ログイン
+  auth.ts               ID トークンの検証（aws-jwt-verify）。JWKS は環境変数で受け取る（認証と認可）
+  config.ts             環境変数の読み方（足りない・おかしい値は起動時に止める。prod で認証なしにできない）
+  db.ts・secrets.ts     接続プール（最初のリクエストでつなぐ、28P01 で秘密情報を読み直してプールを作り直す、RDS の CA で証明書を確かめる）
+  log.ts                ログ（console にオブジェクトを渡す。Lambda が JSON の message に入れる）
+  migrate.ts・pre-sql.ts・migrations.ts  マイグレーションの実行役（Lambda 関数のハンドラー。CLI としても動く）
+  bootstrap.ts          DB の利用者を作る（db-bootstrap 関数）
+  certs/                RDS の CA（global-bundle.pem）
 scripts/
-  build-server.mjs  esbuild で api/index.js と migrate/index.mjs にまとめ、zip にする
-  deploy/           revision の作成・next での確認・live の切り替え・戻す（後述）。最初の endpoint を作る bootstrap
-infra/              AWS CDK
-  bin/app.ts        環境（dev / stg / prod）ごとにスタックを並べる
-  lib/network.ts    VPC（3 AZ のプライベートサブネット）・VPC endpoint（Secrets Manager）
-  lib/data.ts       Aurora・Secrets Manager・KMS・AWS Backup
-  lib/api.ts        Web Function・Network Connector・実行ロール・コード用の S3・ロググループ・リソースポリシー・revision の設定（SSM パラメーター）
-  lib/migrate.ts    migrate の Lambda 関数（API より先に更新するので、別のスタックにする）
-  lib/edge.ts       CloudFront（OAC は S3 用と Lambda 用）・S3・WAF・CloudFront Function（SPA のパスを index.html に）・Route 53
-  lib/ci.ts         GitHub OIDC の IDプロバイダーとデプロイ用の IAM ロール
-  lib/monitoring.ts ダッシュボード・アラーム・SNS・チャット通知
-.github/workflows/
-  deploy.yml        main → stg、承認 → prod（後述の手順）
+  build-server.mjs      esbuild で dist-server/api.zip（index.js）と migrate.zip（drizzle/ を含む）を作る。同じ中身なら同じバイト列（zip.mjs）
+  load-test.mjs         負荷試験
+infra/                  AWS CDK（Node 24 が TypeScript をそのまま動かす。npm は別）
+  bin/app.ts・lib/      スタック（下の表）。lib/config.ts が環境ごとの値、lib/nag.ts が cdk-nag で認めたもの（理由つき）
+  scripts/deploy/       upload・migrate・bootstrap・release・rollback・smoke・publish-web・web-env（デプロイの手順）
+  scripts/ops/          restore-drill（復元の練習）
+  test/                 テンプレートの決まり・cdk-nag・デプロイの手順・運用のスクリプト（node --test）
+src/auth/               画面のログイン（認可コード + PKCE）。VITE_AUTH_MODE=cognito のビルドだけ
+.github/workflows/      ci.yml（check・integration-postgres・infra・e2e）、deploy.yml・deploy-env.yml（AWS へのデプロイ）
 ```
 
-`src/server` は書き換えません。本物の PostgreSQL 18.6 に node-postgres でつなぎ、結合テスト（`src/**/*.integration.test.*`、78 件）を全部流して通ることを確かめてあります
-（テスト用の DB の作り方だけを一時的に差し替えて確かめた。Phase 1 で `TEST_DATABASE_URL` を渡すと本物の PostgreSQL を使うようにし、CI でも流す）。
+| スタック（`<app>-<env>-`） | 中身 | リージョン |
+|---|---|---|
+| Network | VPC（3 AZ・app / db のサブネット・NAT なし）、Secrets Manager の VPC endpoint、セキュリティグループ、フローログ | 東京 |
+| Data | Aurora PostgreSQL 18.6（Serverless v2）、KMS、パラメーター（`rds.force_ssl` など）、app / migrator / readonly の秘密情報とローテーション、AWS Backup（prod） | 東京 |
+| Api | Web Function（入れ物）、Network Connector、実行ロール、コードのバケット、ロググループ（`.local` も）、revision の設定の SSM パラメーター | 東京 |
+| Migrate | migrate 関数・db-bootstrap 関数（コードは `migrate/<SHA>.zip`） | 東京 |
+| EdgeGlobal | WAF の Web ACL、証明書（独自ドメインのとき） | us-east-1 |
+| Edge | CloudFront（S3 と Web Function の OAC）、S3、CloudFront Function、Web Function のリソースポリシー、Route 53 | 東京 |
+| Auth | Cognito（User Pool・admin グループ・マネージドログイン・公開クライアント） | 東京 |
+| EdgeAlarms | CloudFront の 5xx のアラーム | us-east-1 |
+| Monitoring | アラーム・ダッシュボード・ログのメトリクス・RUM・Budgets・Slack への通知 | 東京 |
+| Ci | GitHub OIDC と、環境ごとのデプロイ用ロール | 東京 |
 
-`server/index.ts` の試作を作り、Web Functions の決まりどおりに動くかを Node 24.22 と PostgreSQL 18.6 で確かめました（AWS の上ではまだ動かしていません）。
+`src/server` は、読み書きの制限（[認証と認可](#認証と認可)）のために各関数が `access` を受け取るようにした以外は変えていません。
+結合テスト（`src/**/*.integration.test.*`）は、`TEST_DATABASE_URL` を渡すと本物の PostgreSQL に流れます（CI の integration-postgres は `postgres:18.6`）。
+
+ビルドした zip を展開して Node 24.22 で動かし、Web Functions の決まりどおりに動くかを確かめています（`server/bundle.pg.test.ts`。AWS の上ではまだ動かしていない）。
 
 | 確かめたこと | 結果 |
 |---|---|
-| `AWS_LAMBDA_HTTP_ENDPOINT` の host:port で listen するまで（決まりは 10 秒以内） | 0.15 秒。DB にはまだつながない |
-| 1 つの実行環境に 64 本を同時に送る（POST と GET を混ぜる） | 5xx なし。DB の接続は 10 本（プールの上限）を超えない |
-| DB 側から待機中の接続を全部切る（フェイルオーバーの代わり） | プロセスは落ちず、ログを出し、次のリクエストは 200 |
+| `AWS_LAMBDA_HTTP_ENDPOINT` の host:port で listen するまで（決まりは 10 秒以内） | 2 秒以内（テストの上限）。DB にはまだつながない（接続 0） |
+| 1 つの実行環境に 64 本を同時に送る（POST と GET を混ぜる） | 5xx なし。DB の接続はプールの上限（10）を超えない |
+| DB 側から待機中の接続を全部切る（フェイルオーバーの代わり） | プロセスは落ちず、次のリクエストは通る（`server/db.pg.test.ts`） |
+| DB のパスワードが変わる（ローテーション） | 失敗した 1 本は 500、次からは読み直したパスワードで通る |
 | DB につながらない | listen はでき、`/api/readyz` は 503、API は中身を隠した 500 |
-| `SIGTERM`（決まりは 1 秒以内） | 12 ms で終わり、接続は残らない |
-| `ALTER ROLE ... SET idle_session_timeout` | 放置された接続を DB が切る |
+| `SIGTERM`（決まりは 1 秒以内） | 1 秒以内に終了コード 0、接続は残らない |
+| ログイン（`AUTH_MODE=cognito`） | トークンなしは 401、メンバーでなければ 403、メンバーは自分のプロジェクトだけ。readyz はログインなし |
 
 サーバーで気をつけること:
 
-- **listen の仕方**: `AWS_LAMBDA_HTTP_ENDPOINT`（`host:port`）を読み、その host と port で listen します（ポートを決め打ちしない、`localhost` に限らない）。
-  ローカルでは変数がないので `127.0.0.1:3000` にします。
-
-  ```ts
-  const [hostname, port] = (process.env.AWS_LAMBDA_HTTP_ENDPOINT ?? '127.0.0.1:3000').split(':')
-  serve({ fetch: app.fetch, hostname, port: Number(port) }) // @hono/node-server
-  ```
-
+- **listen の仕方**: `AWS_LAMBDA_HTTP_ENDPOINT`（`host:port`。IPv6 は `[::1]:8080`）を読み、その host と port で listen します。ローカルでは `127.0.0.1:3000`。
 - **DB には最初のリクエストでつなぐ**: listen の前に DB や Secrets Manager を待つと、10 秒の決まりと DB の一時停止（15 秒）が重なって起動に失敗します。
-  同時に来た最初のリクエストが何本あっても準備は 1 回にし（Promise を共有する）、失敗したら次のリクエストでやり直します。`respond` は `Promise<Db>` を受け取れるので、`src/server` は変えません。
+  同時に来た最初のリクエストが何本あっても準備は 1 回にし（Promise を共有する）、失敗したら次のリクエストでやり直します。
 - **パスワード**: 環境変数には Secrets Manager の ARN だけを置き、値は起動後に読みます（revision の環境変数は、読める人に平文で見える）。
   読んだ値は 1 時間だけ使い回し、認証に失敗したら（`28P01`）読み直してプールを作り直します。AWS SDK はランタイムに入っていないので、バンドルに含めます。
-- **接続プール**: 上限は環境ごとの表のとおり。使わない接続は 30 秒で閉じ（`idleTimeoutMillis`）、`pool.on('error', ...)` を必ず付けます（付けないと、待機中の接続が切れたときにプロセスが落ちる）。
-- **止め方**: `SIGTERM` のあと 1 秒しかないので、`server.close()` と `pool.end()` を 0.5 秒だけ待って終わります。
-  ハードウェアの障害などで後片付けが走らないこともあるので、DB 側でもアプリ用の利用者に `idle_session_timeout = '15min'` を付けておきます。
-- **状態を持たない**: 1 つのプロセスが複数のリクエストを同時に処理します。リクエストごとの値をモジュールの変数に入れません（今の `src/server` にはない）。
-- **ログ**: `console.log` の出力は Lambda が JSON にし、リクエスト ID（`lambda-web-request-id`）を付けて CloudWatch Logs に送ります。アプリはルートの形・状態コード・所要時間・ビルドの SHA を足します。
-- **Node のバージョン**: Web Functions は Node 24 だけなので、CI とローカルも 24 にそろえます（Phase 1）。
+- **接続ごとの設定**: `statement_timeout = 20s`・`idle_in_transaction_session_timeout = 30s`・`idle_session_timeout = 15min`・`TimeZone = UTC` を接続のたびに付けます。
+  DB の利用者の設定（`ALTER ROLE app SET ...`）は、ローテーションで作られる複製の利用者（`app_clone`）には引き継がれないためです。
+- **TLS**: Aurora は `rds.force_ssl = 1`。アプリは RDS の CA（`server/certs`）で証明書とホスト名を確かめます。
+- **止め方**: `SIGTERM` のあと 1 秒しかないので、`server.close()` と `pool.end()` を 0.5 秒だけ待って終わります。閉じきれなかった接続は DB 側の `idle_session_timeout` が消します。
+- **状態を持たない**: 1 つのプロセスが複数のリクエストを同時に処理します。リクエストごとの値をモジュールの変数に入れません。
+- **ログ**: `console.info` にオブジェクトを渡すと、Lambda がそれを JSON の `message` に入れ、`requestId`・`endpointName` を足します（文字列にすると中の項目で検索できない）。
+  アプリはルートの形・状態コード・所要時間・ビルドの SHA を出し、監視のメトリクスはこの形から作ります（`$.message.durationMs` など）。
+
+## 認証と認可
+
+| | 内容 |
+|---|---|
+| ログイン | Cognito のマネージドログイン。画面は認可コード + PKCE でトークンを受け取り、タブの sessionStorage に置く（`src/auth`）。期限の 1 分前に取り直し、取り直せなければログインし直す |
+| 自分で登録できるか | できない。管理者が Cognito で利用者を招待し、同じメールアドレスでメンバーを登録する。prod は MFA 必須 |
+| API に送るもの | ID トークンを `Authorization: Bearer`。CloudFront の OAC（`always-amz-auth`）は利用者の `Authorization` をそのまま渡し、Lambda は AWS の署名（`AWS4-`）だけを外す。GET でも渡るよう、`/api/*` のキャッシュポリシーに `Authorization` を入れる（最大 1 秒。API は `no-store`） |
+| 検証 | `token_use = id`、発行元（User Pool）、宛先（クライアント ID）、期限、署名、`email_verified`。鍵（JWKS）はデプロイのときに読んで環境変数 `COGNITO_JWKS` で渡す（Web Function はインターネットに出ない）。鍵が替わったら release を流し直す |
+| メンバーとのつなぎ | メールアドレス（大文字・小文字を区別しない）。メンバーとして登録されていない人は 403。管理者（`admin` グループ）だけは、自分を登録するために入れる |
+
+読み書きの制限（`src/server/access.ts`。表は `src/server/access.integration.test.ts`）:
+
+| 対象 | ログインした人ができること | できないとき |
+|---|---|---|
+| プロジェクト | 自分がメンバーのものだけ一覧・取得・変更・削除・メンバーの変更。作ったプロジェクトには自分が入る。自分をメンバーから外すことはできない | 404（ないものと同じ。あることを知らせない）。自分を外すのは 400 |
+| タスク | 自分がメンバーのプロジェクトのものだけ | 404 |
+| コメント | 書ける（投稿者はログイン中の利用者。送られてきた `authorId` は使わない）。消せるのは自分のものと、投稿者が削除されたもの。管理者はどれでも | 404 / 403 |
+| メンバー | 一覧は誰でも。本人は名前と肩書きを変えられる（メールアドレスは変えられない）。登録・削除・他人の変更は管理者だけ | 403 |
+| タグ | 一覧と作成は誰でも。削除は管理者だけ | 403 |
+| ダッシュボード | 自分がメンバーのプロジェクトとそのタスクだけを数える（メンバーの数は全体） | — |
+
+モック（MSW + ブラウザの PGlite）とテストは、今までどおり制限なし（`ALL`）です。メンバーの一覧の「参加プロジェクト数」「未完了のタスク数」は全体の数なので、ほかの人がどのくらい抱えているかは見えます（中身は見えない）。
 
 ## デプロイ
 
 ### 初回の構築（環境ごとに 1 回）
 
+コマンドは `infra/` で流します（`cd infra && npm ci`）。`<app>` は `infra/cdk.json` の `context.app`（既定は `tasks`）、`<env>` は `dev` / `stg` / `prod`。
+案件ごとの値は `cdk.json` の context か `-c` で渡します: `account.<env>`（必須）、`domain.<env>`・`hostedZoneId.<env>`・`hostedZoneName.<env>`、
+`alarmEmail.<env>`、`slackWorkspaceId`・`slackChannelId.<env>`、`allowedCidrs.<env>`、`wafMode.prod`、`cognitoDomainPrefix.<env>`、`githubRepository`、`githubOidcProviderArn`。
+
 1. **アカウントと人の入り方**: dev / stg / prod のアカウントを用意し、人は IAM Identity Center から入る（IAM ユーザーとアクセスキーは作らない）。
 2. **CDK の準備**: `npx cdk bootstrap aws://<アカウント>/ap-northeast-1 aws://<アカウント>/us-east-1`
    （CloudFront に付ける ACM の証明書と WAF は us-east-1 に作るため、両方のリージョンで行う）。
-3. **ドメイン**: Route 53 のホストゾーンを用意し、`lib/edge.ts` で証明書（DNS 検証）とレコードを作る。
-4. **基盤**: `npx cdk deploy <env>-Network <env>-Data`。Aurora の管理者のパスワードは RDS が Secrets Manager で管理し、ローテーションも任せる（`ManageMasterUserPassword`）。
-5. **DB の利用者を作る（1 回だけ、管理者で）**: アプリ用（`app`）とマイグレーション用（`migrator`）を分ける。パスワードは CDK が Secrets Manager に作り、
-   `db-bootstrap` 関数（Lambda 関数、管理者の秘密情報を読めるのはこの関数だけ）を 1 回呼んで次の SQL を流す。
+3. **基盤**: `npx cdk deploy <app>-<env>-Network <app>-<env>-Data <app>-<env>-Api -c env=<env> -c account.<env>=<アカウント>`。
+   Aurora の管理者のパスワードは RDS が Secrets Manager で管理する（`ManageMasterUserPassword`）。app / migrator / readonly の秘密情報とローテーションは CDK が作る。
+4. **サーバーの zip を置き、migrate 関数を作る**: リポジトリの直下で `npm run build:server` のあと、
+   `node scripts/deploy/upload.ts <env> <SHA> ../dist-server` → `npx cdk deploy <app>-<env>-Migrate -c env=<env> -c buildSha=<SHA> ...`。
+5. **DB の利用者・マイグレーション・endpoint**: `node scripts/deploy/bootstrap.ts <env> <SHA>`。何度流しても同じ結果になる。
+   1. `db-bootstrap` 関数（管理者の秘密情報を読めるのはこの関数とローテーションの関数だけ）が `migrator`・`app`・`readonly` を作る（`server/bootstrap.ts`。既存の利用者のパスワードは変えない）
+   2. 事前の SQL とマイグレーションを流す
+   3. 最初の revision を作り、`next` の endpoint を作ってスモークテストし、`live` の endpoint を作る（どちらも `HomeRegion`・`IamAuth`・自動デプロイなし）
+   4. 2 つの endpoint のドメインを SSM パラメーター（`/<app>/<env>/api/live-domain`・`next-domain`）に書く。endpoint は CloudFormation で持たない（重みをデプロイの手順で動かすため）
+
+   DB の利用者の権限（`server/bootstrap.ts` の SQL）:
 
    ```sql
-   CREATE ROLE migrator LOGIN PASSWORD :'migrator_password';
-   CREATE ROLE app LOGIN PASSWORD :'app_password';
+   CREATE ROLE migrator LOGIN PASSWORD '...';   -- パスワードは CDK が作った秘密情報の値
+   CREATE ROLE app LOGIN PASSWORD '...';
    GRANT CONNECT ON DATABASE app TO migrator, app;
    GRANT CREATE ON DATABASE app TO migrator;            -- Drizzle は毎回 CREATE SCHEMA IF NOT EXISTS "drizzle" を流すので必要
    GRANT USAGE, CREATE ON SCHEMA public TO migrator;
@@ -188,25 +228,27 @@ infra/              AWS CDK
    -- migrator が作った表・連番に、app が読み書きできるようにする（DDL はできない）
    ALTER DEFAULT PRIVILEGES FOR ROLE migrator IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app;
    ALTER DEFAULT PRIVILEGES FOR ROLE migrator IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO app;
-   -- リクエスト（30 秒）より先に SQL を止める。後片付けされなかった接続を消す
+   -- リクエスト（30 秒）より先に SQL を止める。後片付けされなかった接続を消す（API は接続ごとにも同じ値を付ける）
    ALTER ROLE app SET statement_timeout = '20s';
    ALTER ROLE app SET idle_in_transaction_session_timeout = '30s';
    ALTER ROLE app SET idle_session_timeout = '15min';
+   -- 調べ物用。読むだけ
+   GRANT pg_read_all_data TO readonly;
+   ALTER ROLE readonly SET default_transaction_read_only = on;
    ```
 
-   この権限で、`migrator` がマイグレーションを流せること、`app` が読み書きでき `DROP TABLE`・`ALTER TABLE`・`TRUNCATE` は拒否されることを、PostgreSQL 18.6 で確かめてあります。
-   `GRANT CREATE ON DATABASE` がないと、`drizzle` スキーマがすでにあっても migrator は `permission denied for database` で失敗します。
-6. **API**: `npx cdk deploy <env>-Api <env>-Migrate`。Web Function（名前だけ）・Network Connector・実行ロール・コード用の S3（バージョニングあり）・ロググループ（KMS）を作り、
-   revision の設定（実行ロール、Network Connector のバージョン付きの ARN、環境変数、タイムアウト、ログの設定）を SSM パラメーターに書く。
-7. **endpoint を作る（1 回だけ）**: `scripts/deploy/bootstrap.sh <env>` が最初の revision を作り、`live` と `next` の 2 つの endpoint（どちらも `HomeRegion`・`IamAuth`・自動デプロイなし）を作って、
-   `live` のドメインを SSM パラメーターに書く。endpoint は CloudFormation で持ちません（重みをデプロイの手順で動かすため。[設計の判断](#設計の判断)）。
-8. **入口**: `npx cdk deploy <env>-Edge`。CloudFront の `/api/*` のオリジンを `live` のドメインにし、Lambda 用の OAC（`lambda`・`always-amz-auth`・`sigv4`）を付ける。
-   Web Function のリソースポリシーで、このディストリビューション（`aws:SourceArn` にディストリビューションの ARN。ID ではない）だけに `live` の呼び出しを許す。
-   `/api/*` のキャッシュは無効にし、オリジンへは Host を除いたヘッダー・クッキー・クエリを送る（`AllViewerExceptHostHeader`。Host を送ると endpoint が 404 を返す）。
-9. **GitHub**: `npx cdk deploy <env>-Ci` で OIDC の ID プロバイダーとデプロイ用ロールを作る。ロールの信頼ポリシーは、このリポジトリのその環境
-   （`repo:<owner>/<repo>:environment:production` など）からだけ引き受けられるように絞る。GitHub Environments の `production` には承認者を設定する。
-   デプロイ用ロールには `next` の呼び出し（スモークテスト）を許し、`live` は CloudFront だけにする。
-10. 最初のリリースを、次の「いつものリリース」の手順で流す。
+   この権限で、`migrator` がマイグレーションを流せること、`app` が読み書きでき `DROP TABLE`・`ALTER TABLE`・`TRUNCATE`・`CREATE TABLE` は拒否されること、
+   `readonly` が読むだけであることを PostgreSQL 18.6 で確かめてあります（`server/bootstrap.pg.test.ts`）。
+   ローテーション（交互に使う方式）が作る複製の利用者（`migrator_clone`）でも、実行役が `SET ROLE migrator` するので、表の持ち主は `migrator` にそろいます（同じテストで確かめた）。
+6. **入口**: `npx cdk deploy <app>-<env>-EdgeGlobal <app>-<env>-Edge ...`。CloudFront の `/api/*` のオリジンを `live` のドメインにし、Lambda 用の OAC（`lambda`・`always-amz-auth`・`sigv4`）を付ける。
+   Web Function のリソースポリシーで、このディストリビューション（`aws:SourceArn` にディストリビューションの ARN）だけに `live` の呼び出しを許す。
+   オリジンへは Host を除いたヘッダー・クッキー・クエリを送る（`AllViewerExceptHostHeader`。Host を送ると endpoint が 404 を返す）。
+7. **認証と監視**: `npx cdk deploy <app>-<env>-Auth <app>-<env>-EdgeAlarms <app>-<env>-Monitoring ...`。Cognito の User Pool に最初の管理者を招待し、`admin` グループに入れる。
+   その人が画面にログインし、メンバーの画面で自分を登録する（同じメールアドレス）。Slack に送るときは、先に Amazon Q Developer in chat applications でワークスペースを登録しておく。
+8. **GitHub**: `npx cdk deploy <app>-<env>-Ci ...` で OIDC の ID プロバイダーとデプロイ用ロールを作る（アカウントに ID プロバイダーがすでにあれば `githubOidcProviderArn` を渡す）。
+   ロールの信頼ポリシーは、このリポジトリのその環境（`repo:<owner>/<repo>:environment:production` など）からだけ引き受けられる。
+   GitHub Environments（`development`・`staging`・`production`）に変数 `AWS_ACCOUNT_ID`・`AWS_DEPLOY_ROLE_ARN` を置き、`production` には承認者を設定する。
+   最後にリポジトリの変数 `AWS_DEPLOY_ENABLED` を `true` にすると、`main` の CI のあとにデプロイが流れ始める。
 
 ### いつものリリース
 
@@ -234,62 +276,33 @@ sequenceDiagram
   GH->>WEB: スモークテスト（CloudFront 経由で、読むだけの主な画面）
 ```
 
-1. **ビルド**: サーバー（`node scripts/build-server.mjs`。Arm64 の Node 24 で、esbuild で 1 ファイルにまとめて zip にする）と画面（`VITE_USE_MOCK=false npm run build`）。
-   同じドメインで配るので `VITE_API_BASE` はいりません（既定で `/api`）。`check:no-mock-build` と同じ検査をここでも通す。
-2. **zip を置く**: `s3://<コード用のバケット>/api/<SHA>.zip` と `migrate/<SHA>.zip`。同じキーに上書きしません（revision は S3 のオブジェクトのバージョンを指して作る）。
-3. **migrate 関数を更新**: `npx cdk deploy <env>-Migrate -c buildSha=<SHA>`。API とは別のスタックなので、API はまだ古いままです。
-4. **マイグレーション**: 同期で 1 回だけ呼び、関数のエラーと戻り値を確かめる。
-
-   ```bash
-   # 待ち時間は関数の最大（900 秒）より長くし、CLI のやり直しは止める（タイムアウトで 2 回流さない）
-   AWS_MAX_ATTEMPTS=1 aws lambda invoke --function-name "$ENV-migrate" --payload '{"mode":"migrate"}' \
-     --cli-binary-format raw-in-base64-out --cli-read-timeout 960 out.json > meta.json
-   test "$(jq -r '.FunctionError // empty' meta.json)" = "" && test "$(jq -r .ok out.json)" = true
-   ```
-
-   migrate 関数は同時に 1 つしか動かないようにします（予約済みの同時実行数を 1。実行役の advisory lock と二重に防ぐ）。
-5. **API の revision を作って確かめる**: `scripts/deploy/release.sh <env> <SHA>`。
-
-   ```bash
-   CFG=$(aws ssm get-parameter --name "/app/$ENV/api/revision-config" --query Parameter.Value --output text)
-   VER=$(aws s3api head-object --bucket "$BUCKET" --key "api/$SHA.zip" --query VersionId --output text)
-   NEW=$(aws lambda-web create-web-function-revision --function-name "$FN" \
-     --build-config "{\"codeConfig\":{\"s3Object\":{\"bucket\":\"$BUCKET\",\"key\":\"api/$SHA.zip\",\"versionId\":\"$VER\"}},\"runtimeConfig\":{\"runtime\":\"nodejs24.x\"}}" \
-     --service-config "$(jq -c --arg sha "$SHA" '.environmentVariables.BUILD_SHA = $sha' <<<"$CFG")" \
-     --query revisionId --output text)
-   aws lambda-web wait web-function-revision-active --function-name "$FN" --revision-id "$NEW"
-   OLD=$(aws lambda-web get-web-function-endpoint --function-name "$FN" --endpoint-name live --query 'revisionWeights[0].revisionId' --output text)
-   aws lambda-web update-web-function-endpoint --function-name "$FN" --endpoint-name next --revision-weights "[{\"revisionId\":\"$NEW\",\"weight\":100}]"
-   aws lambda-web wait web-function-endpoint-updated --function-name "$FN" --endpoint-name next
-   node scripts/deploy/smoke.mjs "https://$NEXT_DOMAIN"   # SigV4（サービス名 lambda）。X-Amz-Content-SHA256 ヘッダーが必須
-   ```
-
-   revision は起動に失敗しても `Active` になります。必ず `next` に実際のリクエスト（`/api/readyz` と、データを変えない主な GET）を送って確かめます。
-   新しい revision は前の設定を引き継がないので、設定はいつも SSM パラメーターの全体から作ります（環境変数やタイムアウトを落とさない）。
-6. **live を切り替える**: stg はそのまま 100%。prod は 10% を 10 分流し、5xx の割合のアラームが鳴らなければ 100% にします。
-   Web Functions の標準のメトリクスには revision の区別がないので、カナリアの間はログの `BUILD_SHA` ごとの 5xx の数も見ます。
-   切り替えたら `next` を 1 つ前の revision に向けます（戻し先を残す。どの endpoint からも使われない古い revision は、50 個を超えると自動で消える）。
-
-   ```bash
-   aws lambda-web update-web-function-endpoint --function-name "$FN" --endpoint-name live \
-     --revision-weights "[{\"revisionId\":\"$OLD\",\"weight\":90},{\"revisionId\":\"$NEW\",\"weight\":10}]"   # prod のみ
-   aws lambda-web update-web-function-endpoint --function-name "$FN" --endpoint-name live --revision-weights "[{\"revisionId\":\"$NEW\",\"weight\":100}]"
-   aws lambda-web update-web-function-endpoint --function-name "$FN" --endpoint-name next --revision-weights "[{\"revisionId\":\"$OLD\",\"weight\":100}]"
-   ```
-
-   endpoint の更新は非同期なので、1 回ごとに `aws lambda-web wait web-function-endpoint-updated` で終わるのを待ちます。
-7. **画面**: ファイル名にハッシュが付いた JS・CSS（`assets/`）を先に置き、`index.html` を最後に置く。
+1. **ビルド**: サーバー（`npm run build:server`。esbuild で 1 ファイルにまとめて zip にする。同じ中身なら同じバイト列）。1 回だけ作り、stg と prod に同じ zip を出す。
+   画面は環境ごとに、`node infra/scripts/deploy/web-env.ts <env> <SHA>` の値（`VITE_USE_MOCK=false`・Cognito・RUM）でビルドする。同じドメインで配るので `VITE_API_BASE` はいらない。
+2. **zip を置く**: `node scripts/deploy/upload.ts <env> <SHA>`。`s3://<app>-<env>-code-<アカウント>/api/<SHA>.zip` と `migrate/<SHA>.zip`。
+   `If-None-Match: *` で、同じキーに上書きしない（同じ中身で流し直したときだけ通す）。revision は S3 のオブジェクトのバージョンを指して作る。
+3. **migrate 関数を更新**: `npx cdk deploy <app>-<env>-Migrate -c buildSha=<SHA> --exclusively`。API とは別のスタックなので、API はまだ古いままです。
+4. **マイグレーション**: `node scripts/deploy/migrate.ts <env> pre` → `node scripts/deploy/migrate.ts <env> migrate`。migrate 関数を同期で 1 回だけ呼び、
+   関数のエラー（`FunctionError`）と戻り値の `ok` を確かめる。SDK のやり直しは止める（タイムアウトで 2 回流さない）。
+   migrate 関数は同時に 1 つしか動かない（予約済みの同時実行数を 1。実行役の advisory lock と二重に防ぐ）。
+5. **API の revision を作って確かめる**: `node scripts/deploy/release.ts <env> <SHA>`（`infra/scripts/deploy/release.ts`）。
+   1. SSM の revision の設定の全体に、ビルドの SHA（`BUILD_SHA`）と認証の値（`COGNITO_*`、JWKS）を足して、`api/<SHA>.zip` のバージョンを指す revision を作る。
+      新しい revision は前の設定を引き継がないので、いつも全体から作る（環境変数やタイムアウトを落とさない）
+   2. `Active` になるのを待ち（`Failed` なら止める）、`next` に 100% で向ける
+   3. `next` にスモークテスト（SigV4 のサービス名 `lambda`、`X-Amz-Content-SHA256: UNSIGNED-PAYLOAD`）: `/api/readyz` が 200 で新しい `BUILD_SHA` を返す、ない API は JSON の 404、
+      ログインなしの `/api/projects` は 401。revision は起動に失敗しても `Active` になるので、ここで必ず実際のリクエストを送る。失敗したら `next` を前の revision に戻して止める（`live` はそのまま）
+6. **live を切り替える**（同じ release の続き）: stg はそのまま 100%。prod は 10% を 10 分流し、30 秒ごとに 5xx の割合と起動の失敗のアラーム、
+   新しいビルドの 5xx（ログから作るメトリクス `App/Api ServerErrors`、次元 `Build`）を見る。Web Functions の標準のメトリクスには revision の区別がないため。
+   異常があれば `live` と `next` を前の revision に戻して失敗にする。通れば `live` を 100% にし、`next` を 1 つ前の revision に向ける（戻し先を残す）。
+   endpoint の更新は非同期なので、1 回ごとに終わるのを待つ。切り替えのたびに `maxEnvironments` を CDK の値にそろえる。
+7. **画面**: `node scripts/deploy/publish-web.ts <env> ../dist`。ファイル名にハッシュが付いた JS・CSS（`assets/`）を先に置き（1 年キャッシュ、同じ名前は上書きしない）、
+   そのほかのファイル、最後に `index.html`（キャッシュさせない）を置いて、`index.html` のキャッシュだけを消す。
    古いファイルは消しません。ビルドには後から読み込む JS（例: `assets/sheet-presentation-*.js`）があり、開いたままの画面が古いものを読みに来るためです。
-   消すなら「直近の数回のビルドに含まれないもの」だけにします（日付で消すと、変わらずに使い続けているファイルまで消える）。
+   GitHub Pages 用の `404.html` は置きません。
+8. **スモークテスト**: `node scripts/deploy/smoke.ts https://<サイト> --site --auth cognito --build <SHA>`。CloudFront 経由で、画面（`/`）、
+   画面の URL（`/projects/1` も `index.html`）、ない JS は `index.html` にしない、API（OAC の署名）、本文のある POST が API まで届く（ログインなしは 401。データは変わらない）を確かめる。
 
-   ```bash
-   aws s3 sync dist/assets "s3://$BUCKET/assets" --cache-control 'public,max-age=31536000,immutable'
-   aws s3 sync dist "s3://$BUCKET" --exclude 'assets/*' --exclude index.html --exclude 404.html --cache-control 'public,max-age=300'
-   aws s3 cp dist/index.html "s3://$BUCKET/index.html" --cache-control 'no-cache'
-   aws cloudfront create-invalidation --distribution-id "$DIST" --paths /index.html
-   ```
-
-8. **スモークテスト**: CloudFront 経由で `/api/readyz` と、データを変えない主な画面を Playwright で開く。失敗したら通知し、prod への承認を止める。
+GitHub Actions（`.github/workflows/deploy.yml`・`deploy-env.yml`）はこの順番で流します。サーバーの zip は 1 回だけ作り（成果物として残す）、stg と prod に同じものを出します。
+画面のビルドは成果物として 30 日残します（画面を戻すとき）。
 
 画面の URL（`/projects/1` など）は、CloudFront Function でファイル名のないパスを `/index.html` に書き換えて返します（S3 のビヘイビアのビューワーリクエストに付ける）。
 CloudFront の「カスタムエラーレスポンス」はディストリビューション全体に効き、API の 404（JSON）まで `index.html` に変えてしまうので使いません。
@@ -299,8 +312,8 @@ Web Function のオリジンには Lambda@Edge のオリジンリクエスト・
 
 | 戻したいもの | やり方 | 前提 |
 |---|---|---|
-| API | `scripts/deploy/rollback.sh <env>`: `live` を `next` にある 1 つ前の revision に 100% で向ける（数秒。作り直さない） | 同じリリースの DB の変更が「足すだけ」であること（[互換性の決まり](#互換性の決まり)）。2 つ以上前に戻すときは、その SHA の zip から revision を作り直す |
-| 画面 | 前のビルド（GitHub Actions の成果物に残す）の `index.html` を置き直し、キャッシュを消す | JS・CSS を消していないこと |
+| API | `node scripts/deploy/rollback.ts <env>`: `live` を `next` にある 1 つ前の revision に 100% で向け、`next` には戻す前の revision を残す（数秒。作り直さない。もう一度流すと元に戻る） | 同じリリースの DB の変更が「足すだけ」であること（[互換性の決まり](#互換性の決まり)）。2 つ以上前に戻すときは、その SHA の zip から revision を作り直す |
+| 画面 | 前のビルド（GitHub Actions の成果物 `web-<env>-<SHA>`）を `publish-web.ts` で置き直す（`index.html` が前のものになる） | JS・CSS を消していないこと |
 | DB のスキーマ | **戻しません。** 直すマイグレーションを足して前に進める | Drizzle に down マイグレーションはない |
 | DB のデータ（誤って消した・壊した） | PITR で**別のクラスター**に復元し、必要な行を戻す（[運用](#データを誤って消した)） | バックアップの保存期間内であること |
 
@@ -331,46 +344,21 @@ drizzle-orm 0.45.4 のソースを読み、PostgreSQL 18.6 で動かして確か
 ### 流し方（実行役）
 
 マイグレーションはアプリの起動時には流しません（実行環境が同時にいくつも起動すると同時に流れる。失敗した環境が起動を繰り返す）。
-デプロイの手順の中で、migrate 関数（Lambda 関数）を 1 回だけ同期で呼びます。実行役（`server/migrate.ts`、Phase 1 で作る）の中身:
+デプロイの手順の中で、migrate 関数（Lambda 関数）を 1 回だけ同期で呼びます。実行役は `server/migrate.ts`・`server/migrations.ts`・`server/pre-sql.ts` です。
 
-```ts
-import { drizzle } from 'drizzle-orm/node-postgres'
-import { migrate } from 'drizzle-orm/node-postgres/migrator'
-import pg from 'pg'
-import { migratorDatabaseUrl } from './db' // Secrets Manager の migrator の秘密情報から作る
-import { runPreSql } from './pre-sql' // drizzle/pre/*.sql をトランザクションの外で 1 文ずつ流す（後述の「索引を足す」）
+| 実行役がすること | 理由 |
+|---|---|
+| 接続は 1 本だけ（プールを使わない） | advisory lock と `SET` はその接続にだけ効く |
+| `pg_advisory_lock(727001)` を取る | 同時に流さない（2 つ目は 1 つ目が終わるのを待つ）。Drizzle だけだと `duplicate key` で失敗する |
+| `SET ROLE migrator` | ローテーションで複製された利用者（`migrator_clone`）でつないでも、作る表の持ち主を `migrator` にそろえる（`app` の権限は default privileges で付く） |
+| `SET lock_timeout = '5s'` | ロックを待つ間、後ろに並んだ普通の SELECT まで止めない（下記） |
+| `SET statement_timeout = '10min'` | Lambda の 15 分より前に止める。Fargate の RunTask では `MIGRATE_STATEMENT_TIMEOUT` で延ばす |
+| `55P03`（lock_timeout）なら、待ってやり直す | 全体が戻っているので、やり直してよい。最大 5 回。残り時間（1 文に見込む 11 分 + 待ち）がなければやり直さずに失敗にする |
+| 戻り値 `{ ok, applied, attempts, durationMs }` | デプロイの手順が `ok` と `FunctionError` を確かめる |
 
-const LOCK_ID = 727_001 // このアプリのマイグレーション用の固定値
-
-export async function runMigrations(deadline: number) {
-  for (let attempt = 1; ; attempt++) {
-    // 接続は 1 本だけにする（advisory lock と SET はその接続にだけ効く）
-    const client = new pg.Client({ connectionString: await migratorDatabaseUrl(), application_name: 'migrate', connectionTimeoutMillis: 30_000 })
-    await client.connect()
-    try {
-      await client.query('SELECT pg_advisory_lock($1)', [LOCK_ID]) // 同時に流さない（2 つ目は 1 つ目が終わるのを待つ）
-      await client.query(`SET lock_timeout = '5s'`) // ロックを待つ間、ほかの読み書きを止めない
-      await client.query(`SET statement_timeout = '10min'`) // Lambda の 15 分より前に止める
-      await migrate(drizzle(client), { migrationsFolder: './drizzle' })
-      return { ok: true, attempts: attempt }
-    } catch (e) {
-      const code = (e as { cause?: { code?: string } }).cause?.code
-      // 55P03 = lock_timeout。全体が戻っているので、待ってやり直してよい（残り時間があるときだけ）
-      if (code !== '55P03' || attempt >= 5 || Date.now() + 5_000 * attempt + 11 * 60_000 > deadline) throw e
-      await new Promise((r) => setTimeout(r, 5_000 * attempt))
-    } finally {
-      await client.end()
-    }
-  }
-}
-
-// Lambda 関数のハンドラー（ローカルと Fargate では同じ関数を CLI から呼ぶ）
-export const handler = async (event: { mode: 'migrate' | 'pre' }, context: { getRemainingTimeInMillis(): number }) =>
-  event.mode === 'pre' ? runPreSql(Date.now() + context.getRemainingTimeInMillis()) : runMigrations(Date.now() + context.getRemainingTimeInMillis())
-```
-
-migrate 関数は VPC のプライベートサブネットに置き（Lambda 関数の VPC の設定）、`migrator` の秘密情報だけを読めるようにします。タイムアウトは 900 秒、予約済みの同時実行数は 1 です。
-`drizzle/` のフォルダーは zip に入れます（`migrationsFolder` は zip の中を指す）。
+呼び方は `{"mode":"migrate"}`（本体）・`{"mode":"pre"}`（事前の SQL）・`{"mode":"status"}`（未適用のものを返すだけ）・`{"mode":"verify","host":"..."}`（復元したクラスターを読むだけで確かめる）。
+ローカルと Fargate では同じ zip の `migrate/index.mjs` を CLI として動かします（`MIGRATOR_DATABASE_URL=... node index.mjs migrate`。`npm run migrate` も同じ）。
+migrate 関数は VPC のプライベートサブネットに置き、`migrator` の秘密情報だけを読めます。タイムアウトは 900 秒、予約済みの同時実行数は 1 です。
 
 **`lock_timeout` が要る理由**（確かめたこと）: `ALTER TABLE` は一瞬で終わる変更でも、表の最も強いロックを取ります。
 長いトランザクション（集計や、閉じ忘れた接続）がその表を読んでいる間、`ALTER` はロックを待ち、**その後ろに並んだ普通の `SELECT` まで止まります**。
@@ -380,8 +368,8 @@ migrate 関数は VPC のプライベートサブネットに置き（Lambda 関
 | `lock_timeout` なし | 前のトランザクションが終わるまで待つ | 一緒に止まる（3 秒で打ち切った） |
 | `lock_timeout = '1s'` | 1 秒であきらめて失敗する（`55P03`） | 待たずに返る |
 
-あきらめたマイグレーションは全体が戻っているので、少し待ってやり直します。上のコード（待ち時間だけ短くしたもの）で、長いトランザクションが終わったあとの 2 回目に成功すること、
-残り時間が足りなければやり直さずに失敗し、何も変わらないことを PostgreSQL 18.6 で確かめました。
+あきらめたマイグレーションは全体が戻っているので、少し待ってやり直します。長いトランザクションが終わったあとの 2 回目以降に成功すること、
+待っている間もほかの SELECT が止まらないこと、残り時間が足りなければやり直さずに失敗し何も変わらないことを、PostgreSQL 18.6 で確かめてあります（`server/migrate.pg.test.ts`）。
 5 回やり直しても通らないときは、`pg_stat_activity` で長いトランザクションを探します（[運用](#マイグレーションが失敗した)）。
 
 ### 互換性の決まり
@@ -493,7 +481,7 @@ Aurora のクローンは書き込みのあった分だけ容量を使う（copy
 | SQL のエラー（型の誤りなど） | 何も変わっていない（全体が戻る） | 直す PR を出す。適用されていないので、同じマイグレーションを書き換えてよい（stg で流れていなければ） |
 | stg では通り、prod で失敗した | prod は何も変わっていない。stg は適用済み | 書き換えない。直すマイグレーションを足し、stg と prod の両方に流す |
 | 事前の SQL（CONCURRENTLY）が途中で失敗した | INVALID の索引が残る | 上の手順で消してから流し直す |
-| マイグレーションは通ったが、新しい API が動かない | スキーマは新しい。新しい API は `next` の確認で止まり、`live` は古いまま（`live` に出したあとなら `rollback.sh` で戻す） | 互換性の決まりを守っていれば、古い API のまま動く。直して出し直す |
+| マイグレーションは通ったが、新しい API が動かない | スキーマは新しい。新しい API は `next` の確認で止まり、`live` は古いまま（`live` に出したあとなら `rollback.ts` で戻す） | 互換性の決まりを守っていれば、古い API のまま動く。直して出し直す |
 
 ### ブラウザの PGlite との違い
 
@@ -510,9 +498,9 @@ Aurora のクローンは書き込みのあった分だけ容量を使う（copy
 
 | 見るもの | アラームの条件（目安） | 鳴ったら |
 |---|---|---|
-| Web Function: 5xx の割合（`HTTPResponseStatusClass5XX` ÷ `ExecutedRequests`。5xx は 0 件のときに値が出ないので `FILL(m5xx, 0)` で 0 にする） | 5 分間で 1% を超える | ログで `level=error` を見る。直前にデプロイしていれば `rollback.sh` |
-| API の応答時間（p95。アプリが埋め込みメトリクス形式（EMF）でログに出す所要時間。Web Functions の標準のメトリクスには応答時間がない） | 5 分間 1 秒を超える | Database Insights で遅い SQL を探す。ACU が上限に張り付いていないか |
-| 起動の失敗（ログの `platform.initReport` が `status: failure`） | 1 回でも | 新しい revision なら戻す。revision は起動に失敗しても `Active` になるので、ここで気づく |
+| Web Function: 5xx の割合（`HTTPResponseStatusClass5XX` ÷ `ExecutedRequests`。5xx は 0 件のときに値が出ないので `FILL(m5xx, 0)` で 0 にする） | 5 分間で 1% を超える | ログで `level=error` を見る。直前にデプロイしていれば `infra/scripts/deploy/rollback.ts` |
+| API の応答時間（p95。アプリのログの `durationMs` からメトリクスフィルターで作る `App/Api Latency`。Web Functions の標準のメトリクスには応答時間がない） | 5 分間 1 秒を超える | Database Insights で遅い SQL を探す。ACU が上限に張り付いていないか |
+| 起動の失敗（ログの `platform.initReport` が `record.status = failure`。メトリクスフィルター `App/Api InitFailures`） | 1 回でも | 新しい revision なら戻す。revision は起動に失敗しても `Active` になるので、ここで気づく |
 | スロットリング（`AWS/Lambda/Web/Usage` の `EndpointActiveEnvironmentThrottles`・`AccountActiveVCPUArm64Throttles`。429 を返した数） | 1 回でも | 実行環境の上限（`maxEnvironments`）かアカウントの vCPU の上限に届いた。上げるなら DB の接続数と一緒に見直す |
 | 実行環境の数（`EndpointActiveEnvironments`） | 15 分間、`maxEnvironments` の 80% を超える | 上限に近い。同時に処理しているリクエスト数（`EnvironmentConcurrentRequests`）と一緒に見る |
 | 実行環境のメモリ（`EnvironmentMaxMemoryUsage`） | 1.6 GB を超える（上限は 2 GB） | メモリの漏れか、大きな応答を作っていないか |
@@ -520,18 +508,20 @@ Aurora のクローンは書き込みのあった分だけ容量を使う（copy
 | Aurora: 接続数 | `max_connections` の 80% を超える | `maxEnvironments` × プールの上限を見直す。閉じられていない接続がないか（`application_name` ごとに数える） |
 | Aurora: デッドロック | 1 回でも | ログの SQL を見て、更新の順番をそろえる |
 | CloudFront: 5xx の割合 | 5 分間で 1% を超える | オリジン（Web Function）側か、CloudFront 側かを切り分ける。403 が急に増えたら OAC かリソースポリシーの設定を疑う |
-| アプリのログ: 想定外の例外 | `respond` の 500（`console.error`）が 5 分で 10 件 | スタックトレースを見る（利用者には中身を見せていない） |
-| 画面: JS のエラー | CloudWatch RUM のエラー数が普段の 3 倍 | `src/lib/report-error.ts` から RUM へ送る（Phase 1 で足す） |
+| アプリのログ: 想定外の例外 | `route.error`・`unhandled` のログ（`App/Api UnexpectedErrors`）が 5 分で 10 件 | スタックトレースを見る（利用者には中身を見せていない） |
+| 画面: JS のエラー | CloudWatch RUM の `JsErrorCount` が普段より大きく増えた（異常検知、標準偏差の 3 倍） | `src/lib/report-error.ts` → `src/lib/rum.ts` から送る（署名なし。アプリモニターのリソースポリシーで受ける） |
 | デプロイ: migrate の失敗 | migrate 関数がエラーを返す | パイプラインが止まり通知する。[マイグレーションが失敗した](#マイグレーションが失敗した) |
 | 費用 | AWS Budgets で月の予算の 80% | Cost Explorer でサービスごとに見る |
 
 Web Functions のメトリクスは 0 件の期間に値を出さないもの（5xx・スロットリング）があるので、アラームは「データがないときは正常」として扱います。
 
-ダッシュボードは 1 枚にし、上から「利用者から見た状態（CloudFront・Web Function の状態コード）」「API（実行環境の数・同時リクエスト・スロットリング）」「DB（Aurora）」の順に並べます。
+ダッシュボードは 1 枚にし（`<app>-<env>-overview`）、上から「アラームの一覧」「API（リクエストと 5xx・応答時間・実行環境・メモリと CPU）」「DB（ACU と接続数・デッドロック）」「最近の 5xx（ルートとビルド）」の順に並べます。
+アラームと通知先（SNS → メール・Slack）は `infra/lib/monitoring.ts`、CloudFront のアラームは us-east-1 の `EdgeAlarms` です。
 
 ### ログ
 
-- API は 1 行 1 JSON で出します: 時刻、リクエスト ID（Lambda が付ける `requestId`。応答ヘッダーの `lambda-web-request-id` と同じ）、メソッド、**ルートの形**（`/projects/:id/tasks`。実際の ID は別の項目）、状態コード、所要時間、ビルドの SHA。
+- API は 1 リクエスト 1 行で出します（`type: request`）: メソッド、**ルートの形**（`/api/projects/:id/tasks`。実際の ID とクエリ文字列は出さない）、状態コード、所要時間、ビルドの SHA。
+  リクエスト ID は Lambda が足す（`requestId`。応答ヘッダーの `lambda-web-request-id` と同じ）。
 - ロググループは `/aws/lambda/web/<関数名>` で、KMS のカスタマー管理キーで暗号化します。X-Ray のトレースは Web Functions では使えないので、リクエスト ID でたどります。
 - 本文・クエリ文字列の検索語・メールアドレスは出しません。500 のときだけ、例外のメッセージとスタックトレースを出します。
 - マイグレーションは、流したタグ・所要時間・やり直しの回数を出します。
@@ -545,13 +535,15 @@ Web Functions のメトリクスは 0 件の期間に値を出さないもの（
 | 長期の保管 | 1 年 | AWS Backup で月 1 回のスナップショット |
 
 **3 か月に 1 回、stg で復元の練習をします**（復元にかかった時間を測り、RTO を見直す）。練習していないバックアップは、戻せるかどうか分かりません。
+`cd infra && node scripts/ops/restore-drill.ts stg` が、PITR で新しいクラスターに復元し、Writer を足し、migrate 関数の `verify` で中身を読み（読むだけ）、かかった分数を出して、最後に消します。
+`--time <ISO 8601>` で戻す時刻を、`--keep` で残すことを選べます（調べ終わったら `--delete <ID>`。消せるのは練習の名前のクラスターだけ）。
 
 ### 手順書（ランブック）
 
 #### デプロイが失敗した
 
 1. GitHub Actions のどの手順で止まったかを見る。migrate より前なら、何も変わっていない。
-2. `next` の確認で止まったら、`live` は古いまま。`live` を切り替えたあと（カナリアの間も）に異常なら、`rollback.sh <env>` で `next` にある 1 つ前の revision に戻す。
+2. `next` の確認で止まったら、`live` は古いまま。`live` を切り替えたあと（カナリアの間も）に異常なら、`cd infra && node scripts/deploy/rollback.ts <env>` で `next` にある 1 つ前の revision に戻す。
 3. 画面のアップロードで止まったら、もう一度流す（何度流しても同じ結果になる）。
 
 #### マイグレーションが失敗した
@@ -583,7 +575,7 @@ node-postgres のプールは切れた接続を捨てて作り直すので、ア
 
 #### DB に直接入る
 
-ふだんは入りません。調べ物や障害の対応で必要なときは、**CloudShell の VPC 環境**から、読み取り専用の利用者（Phase 2 で作る）でつなぎます。
+ふだんは入りません。調べ物や障害の対応で必要なときは、**CloudShell の VPC 環境**から、読み取り専用の利用者（`readonly`。秘密情報は `<app>/<env>/db/readonly`）でつなぎます。
 管理者のパスワードは、手順書に書いた承認を得てから Secrets Manager で取り出し、使い終わったらローテーションします。
 
 #### 秘密情報のローテーション
@@ -591,7 +583,8 @@ node-postgres のプールは切れた接続を捨てて作り直すので、ア
 - 管理者: RDS が管理し、自動でローテーションする。
 - `app` / `migrator`: Secrets Manager のローテーションで、2 つの利用者を交互に使う方式にする（切り替えの瞬間に接続が切れない）。
   アプリは読んだパスワードを 1 時間だけ使い回し、認証に失敗したら読み直すので、ローテーションのあとに入れ替える作業はいりません
-  （交互に使う方式では、前の利用者のパスワードも次のローテーションまで使える）。
+  （交互に使う方式では、前の利用者のパスワードも次のローテーションまで使える）。30 日ごと（`infra/lib/data.ts`）。
+- `readonly`: 自分のパスワードを替える方式（調べ物の間だけつなぐので、切り替えの瞬間に切れても困らない）。
 
 #### DB のメジャーバージョンアップ
 
@@ -626,31 +619,59 @@ PGlite のメジャーバージョンが上がったら計画します。RDS の
 
 ## 進め方
 
-上から順に進めます。各段階の「終わり」を満たしてから次へ進みます。
+コードはすべてこのリポジトリにあります（「リポジトリ」の列）。AWS の上で確かめること（「AWS で」の列）は、アカウントができてから順に行います。
 
-| 段階 | やること | 終わり |
+| 段階 | リポジトリ（済み） | AWS で（これから） |
 |---|---|---|
-| Phase 0（このブランチ） | 構成図、この計画、マイグレーションの検査（`check:migrations` を CI に追加）、Web Function の入口の試作（リポジトリには入れていない） | レビューで構成と決まりに合意する |
-| Phase 1: サーバー | Node 24 にそろえる（CI・`.nvmrc`）、`server/`（Web Function の入口・migrate・readyz・ログ・止め方）、`scripts/build-server.mjs`、`TEST_DATABASE_URL` で本物の PostgreSQL 18 に結合テストを流す（CI のサービスコンテナ）、RUM への送信 | ローカルで `AWS_LAMBDA_HTTP_ENDPOINT` を渡して zip の中身が動き、結合テストが CI で通る |
-| Phase 2: 基盤 | `infra/`（CDK）。dev に構築し、stg を作る。最初に、CloudFront（OAC）→ `IamAuth` の endpoint で GET と POST・PATCH・DELETE が通ること、直接の呼び出しが 403 になることを確かめる | stg で画面が開き、API が DB に読み書きできる |
-| Phase 3: デプロイ | `deploy.yml`（OIDC、stg は自動、prod は承認）、`scripts/deploy/`（release・rollback・smoke）、戻す練習。実行環境が 0 からの最初のリクエストの遅さを測る | `main` へのマージだけで stg に出て、前の revision に数秒で戻せる |
-| Phase 4: 認証 | Cognito、API の JWT の検証、「誰が呼んだか」をサーバー層に渡す、プロジェクトのメンバーで読み書きを制限 | ログインした人が、自分のプロジェクトだけを読み書きできる |
-| Phase 5: 本番の開始 | prod の構築、アラームとダッシュボード、負荷試験（`maxEnvironments` とプールの上限を決める）、復元の練習、WAF の誤検知の確認、手順書の読み合わせ | 本番の利用者を受け入れる（認証が済むまでは IP で絞る） |
+| Phase 0 | 構成図、この文書、マイグレーションの検査（`check:migrations`。事前の SQL も） | — |
+| Phase 1: サーバー | Node 24（CI・`.nvmrc`・engines）、`server/`、`scripts/build-server.mjs`、`TEST_DATABASE_URL` と CI の integration-postgres（`postgres:18.6`）、RUM への送信 | — |
+| Phase 2: 基盤 | `infra/`（10 のスタック、cdk-nag、テンプレートのテスト）、CI の infra（資格情報なしで 3 環境を合成） | dev と stg を作る。OAC → `IamAuth` の endpoint で GET と POST・PATCH・DELETE が通ること、endpoint を直接呼ぶと 403 になることを確かめる |
+| Phase 3: デプロイ | `infra/scripts/deploy/`（release・rollback・smoke など）、`deploy.yml`・`deploy-env.yml` | `AWS_DEPLOY_ENABLED` を true にして `main` から stg に出す。`rollback.ts` で戻す練習。実行環境が 0 からの最初のリクエストの遅さを測る |
+| Phase 4: 認証 | Cognito のスタック、ID トークンの検証、サーバー層の認可（`access`）、画面のログイン | 最初の管理者を招待し、ログインからメンバーの登録・自分のプロジェクトだけが見えることまでを stg で通す |
+| Phase 5: 本番の開始 | prod の値（Reader・1〜16 ACU・カナリア・MFA 必須・WAF は数えるだけから）、アラームとダッシュボード、`scripts/load-test.mjs`、`restore-drill.ts` | prod の構築、stg で負荷試験（`maxEnvironments` とプールの上限を決める）、復元の練習、WAF の誤検知を 2 週間見てから `-c wafMode.prod=block`、手順書の読み合わせ |
+
+手元（展開した `api.zip` を Node 24.22 で 1 プロセス、PostgreSQL 18.6、プールの上限 10、負荷を出す側と同じ 2 vCPU のマシン）で負荷試験を流した結果です。
+Lambda の実行環境（2 vCPU）とは CPU も DB も違うので、目安にもしません。stg で同じスクリプトを流して決めます。
+
+| 同時に送る数 | 件/秒 | p50 | p95 | p99 | 5xx |
+|---|---|---|---|---|---|
+| 16 | 504.7 | 28 ms | 57 ms | 67.3 ms | 0 |
+| 64 | 500.7 | 115.1 ms | 226.6 ms | 247 ms | 0 |
+| 128 | 489.5 | 226.6 ms | 460.8 ms | 496.6 ms | 0 |
+
+同時に送る数を増やしても件/秒は変わらず、待ち時間だけが伸びました（プールの上限を 20 にしても変わらなかった）。このマシンでは CPU で頭打ちになっています。
+DB の接続はプールの上限（10）を超えませんでした。
+
+## AWS の上でまだ確かめていないこと
+
+ここに書いた振る舞いは、公式の資料と手元の確かめ（テスト）に基づきます。Lambda Web Functions は 2026-10 に一般提供が始まったばかりなので、stg で 1 つずつ確かめてから prod に進みます。
+
+| 確かめること | どう確かめるか |
+|---|---|
+| CDK のスタックが deploy できる（とくに `AWS::Lambda::WebFunction`・`NetworkConnector`・`ResourcePolicy`、OAC の `always-amz-auth`、RUM のリソースポリシー） | dev に deploy する。合成とテンプレートのテストは CI で済んでいる |
+| OAC → `IamAuth` の endpoint で、GET・POST・PATCH・DELETE と `Authorization: Bearer` が通る。endpoint を直接呼ぶと 403 | `smoke.ts --site`（POST まで）、`curl https://<live のドメイン>/api/readyz` が 403 |
+| Network Connector 経由で Aurora と Secrets Manager の VPC endpoint に届く | `next` の `/api/readyz` が 200 |
+| ログの形（`$.message.type` など）がメトリクスフィルターに合う | ダッシュボードの応答時間が出る。合わなければ `infra/lib/monitoring.ts` のパターンを直す |
+| 起動に失敗した revision が `Active` になり、`next` のスモークテストで止まる | 壊した zip で release を流してみる（stg） |
+| `next` と `live` の切り替え・カナリア・`rollback.ts` の速さ | stg で release と rollback を流し、かかった時間を測る |
+| Aurora PostgreSQL 18.6 の自動一時停止（dev・stg） | CDK の資料では 18.6 で使える（`serverlessV2AutoPauseSupported`）。構築したら 0 ACU になることを見る |
+| ローテーション（交互に使う方式）と、アプリの 28P01 からの立ち直り | stg でローテーションをすぐに流し、API の 5xx が 1 本ほどで止まることを見る |
+| `max_connections` の目安（最大 ACU × 2 GiB ÷ 9531392） | `SHOW max_connections`。`infra/lib/config.ts` の `auroraMaxConnections` を合わせる |
+| 実行環境が 0 からの最初のリクエストの遅さ | stg でしばらく置いてから `/api/readyz` を測る |
 
 ## 未確定のこと
 
 | 項目 | 決め方 |
 |---|---|
-| ドメイン名と、社内の IP だけで使うのか、インターネットに公開するのか | 案件ごとに決める（WAF と認証の強さが変わる）。API の入口を閉域網だけにする必要があれば、[Fargate の構成](#fargate-を使うとき)にする |
-| Aurora の最小・最大 ACU、`maxEnvironments`、プールの上限 | Phase 5 の負荷試験で決める |
-| 実行環境が 0 からの最初のリクエストの遅さ | Phase 3 に stg で測る（試作の起動は 0.15 秒。これに AWS の起動と DB への接続が足される）。業務で困るなら、決まった時間に `/api/readyz` を呼んでおくなどを考える（Web Functions には最小の実行環境の数を決める設定がない） |
-| Phase 4 で `Authorization` ヘッダーを使うときの CloudFront の設定 | GET・HEAD では、キャッシュポリシーに `Authorization` を入れないと CloudFront が外して送る（OAC の決まり）。`/api/*` 用のキャッシュポリシーを作る。クッキーで済ませるなら不要 |
+| ドメイン名と、社内の IP だけで使うのか、インターネットに公開するのか | 案件ごとに決める（`-c domain.<env>`・`allowedCidrs.<env>`）。API の入口を閉域網だけにする必要があれば、[Fargate の構成](#fargate-を使うとき)にする |
+| Aurora の最小・最大 ACU、`maxEnvironments`、プールの上限 | stg の負荷試験で決める（`infra/lib/config.ts`。接続数の式を超えると合成しない） |
+| 実行環境が 0 からの最初のリクエストの遅さ | stg で測る。業務で困るなら、決まった時間に `/api/readyz` を呼んでおくなどを考える（Web Functions には最小の実行環境の数を決める設定がない） |
+| Cognito の脅威の保護（Plus）、パスワードの決まり、MFA を dev・stg でも必須にするか | 案件ごとに決める（`infra/lib/auth.ts`。今は Essentials、prod だけ MFA 必須） |
+| CSP（Content-Security-Policy）のヘッダー | 画面・Cognito・RUM の送り先を書いた CSP を、まず Report-Only で付けて違反を見てから決める（今は付けていない。ほかのセキュリティのヘッダーは付けている） |
 | Aurora のストレージの種類（標準 / I/O-Optimized） | 1 か月動かして、I/O の費用の割合で決める |
-| ログ・バックアップの保存期間 | 顧客の決まり（監査・個人情報）に合わせる |
+| ログ・バックアップの保存期間 | 顧客の決まり（監査・個人情報）に合わせる（`infra/lib/config.ts`） |
 | NAT Gateway の要否 | 外部の API（メール送信など）を呼ぶようになったら足す |
 | 個人情報の扱い（メールアドレスなど） | 削除の依頼にどう応えるか、バックアップからいつ消えるかを決める |
-| Aurora PostgreSQL 18 で Serverless v2 の自動一時停止が使えること | 構築時に確かめる（自動一時停止は 16.3 などの新しいバージョンで使える機能で、18 の資料はまだ確かめていない） |
-| Lambda Web Functions は 2026-10 に一般提供が始まったばかり | Phase 2 で、この計画に書いた振る舞い（OAC と `IamAuth`、Network Connector、`next` と `live` の切り替え、起動に失敗した revision の見え方）を stg で 1 つずつ確かめてから進める |
 
 ## 参考
 

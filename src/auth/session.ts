@@ -29,8 +29,12 @@ function read<T>(key: string): T | undefined {
 
 const saveTokens = (t: Tokens) => sessionStorage.setItem(TOKENS, JSON.stringify(t))
 
-/** ログインの画面へ移る。戻ってきたら returnTo を開く */
+let redirecting = false
+
+/** ログインの画面へ移る。戻ってきたら returnTo を開く。同時に何度呼ばれても（401 が重なっても）移るのは 1 回 */
 export async function login(returnTo = `${location.pathname}${location.search}`): Promise<void> {
+  if (redirecting) return
+  redirecting = true
   const config = oidcConfig()
   // 戻り先は自分のサイトのパスだけ（//other.example のような別のサイトにしない）
   const safe = returnTo.startsWith('/') && !returnTo.startsWith('//') && !returnTo.startsWith(CALLBACK_PATH) ? returnTo : '/'
