@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { createSign, generateKeyPairSync } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -140,6 +141,34 @@ describe('api.zip（index.js）', () => {
     const res = await fetch(`${api.base}/api/projects`)
     expect(res.status).toBe(500)
     expect(await res.text()).not.toContain('127.0.0.1')
+    api.child.kill('SIGTERM')
+    expect(await api.exited).toBe(0)
+  })
+})
+
+describe('api.zip のログイン（AUTH_MODE=cognito）', () => {
+  // 手元で作った鍵を JWKS として渡し（デプロイの手順が User Pool の JWKS を渡すのと同じ）、その鍵で署名した ID トークンを送る
+  const pool = 'ap-northeast-1_BundleTest'
+  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
+  const jwks = JSON.stringify({ keys: [{ ...publicKey.export({ format: 'jwk' }), kid: 'k1', alg: 'RS256', use: 'sig' }] })
+  const b64 = (v: unknown) => Buffer.from(JSON.stringify(v)).toString('base64url')
+  const idToken = (email: string) => {
+    const now = Math.floor(Date.now() / 1000)
+    const body = `${b64({ alg: 'RS256', kid: 'k1' })}.${b64({ iss: `https://cognito-idp.ap-northeast-1.amazonaws.com/${pool}`, aud: 'client-1', token_use: 'id', email, email_verified: true, iat: now, exp: now + 600 })}`
+    return `${body}.${createSign('RSA-SHA256').update(body).sign(privateKey).toString('base64url')}`
+  }
+
+  test('ログインなしは 401、メンバーでなければ 403、メンバーは自分のプロジェクトだけ。readyz はログインなし', async () => {
+    await migrated()
+    await adminQuery(`INSERT INTO members (name, email) VALUES ('山田', 'yamada@example.com') ON CONFLICT DO NOTHING`, [], db.name)
+    const api = await startApi({ DATABASE_URL: db.url, APP_ENV: 'local', AUTH_MODE: 'cognito', COGNITO_USER_POOL_ID: pool, COGNITO_CLIENT_ID: 'client-1', COGNITO_JWKS: jwks })
+    expect((await fetch(`${api.base}/api/readyz`)).status).toBe(200)
+    expect((await fetch(`${api.base}/api/projects`)).status).toBe(401)
+    expect((await fetch(`${api.base}/api/projects`, { headers: { authorization: `Bearer ${idToken('stranger@example.com')}` } })).status).toBe(403)
+    const created = await fetch(`${api.base}/api/projects`, { method: 'POST', headers: { authorization: `Bearer ${idToken('Yamada@Example.com')}`, 'content-type': 'application/json' }, body: JSON.stringify({ name: '山田のプロジェクト' }) })
+    expect(created.status).toBe(201)
+    const list = (await (await fetch(`${api.base}/api/projects`, { headers: { authorization: `Bearer ${idToken('yamada@example.com')}` } })).json()) as { name: string }[]
+    expect(list.map((p) => p.name)).toEqual(['山田のプロジェクト'])
     api.child.kill('SIGTERM')
     expect(await api.exited).toBe(0)
   })

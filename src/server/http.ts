@@ -1,5 +1,6 @@
 import { id as idSchema } from '../shared/schemas'
 import type { ApiErrorBody } from '../shared/types'
+import { ALL, type Access } from './access'
 import { type Db, HttpError } from './core'
 
 // HTTP の境界。Web 標準の Request / Response だけで書き、MSW にも Hono にも依存しない。
@@ -12,6 +13,8 @@ export type Params = Readonly<Record<string, string | readonly string[] | undefi
 
 export type RouteContext = {
   db: Db
+  /** 誰が呼んだか（src/server/access.ts）。MSW とテストでは制限なし（ALL） */
+  access: Access
   /** パスの数値 ID。正の int4 でなければ 400 */
   id: (name?: string) => number
   /** クエリ文字列。値の検証は各サーバー関数のスキーマで行う */
@@ -59,11 +62,14 @@ export async function respond(
     db,
     request,
     params,
+    access = ALL,
     onUnexpectedError = (e) => console.error(e),
   }: {
     db: Db | Promise<Db>
     request: Request
     params: Params
+    /** 本番のサーバーは認証の結果を渡す。メンバーでない（403）などの判定の失敗も、ここで状態コードにする */
+    access?: Access | Promise<Access>
     /** 想定外の例外の記録先。既定はコンソール。本番のサーバーは構造化したログに出す（server/app.ts） */
     onUnexpectedError?: (e: unknown) => void
   },
@@ -72,6 +78,7 @@ export async function respond(
     const result = await route.handle({
       // DB の取得（接続）の失敗も、想定外の例外として 500 にする
       db: await db,
+      access: await access,
       id: (name) => parseId(params, name),
       query: Object.fromEntries(new URL(request.url).searchParams),
       body: () => readJson(request),

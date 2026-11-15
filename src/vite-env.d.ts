@@ -8,6 +8,10 @@ interface ImportMetaEnv {
   /** CloudWatch RUM のアプリモニター。あるときだけ画面のエラーを送る（src/lib/rum.ts） */
   readonly VITE_RUM_APP_MONITOR_ID?: string
   readonly VITE_RUM_REGION?: string
+  /** "cognito" にするとログインする（src/auth）。値はデプロイの手順が SSM から渡す */
+  readonly VITE_AUTH_MODE?: string
+  readonly VITE_COGNITO_DOMAIN?: string
+  readonly VITE_COGNITO_CLIENT_ID?: string
   /** ビルドしたコミット（RUM とサーバーのログを突き合わせる） */
   readonly VITE_APP_VERSION?: string
 }

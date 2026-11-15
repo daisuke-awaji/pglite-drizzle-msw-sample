@@ -90,6 +90,11 @@ function endpoints(initial: Record<string, { revisionId: string; weight: number 
 }
 
 const updates = () => web.commandCalls(UpdateWebFunctionEndpointCommand).map((c) => `${c.args[0].input.endpointName}:${c.args[0].input.revisionWeights!.map((w) => `${w.revisionId}=${w.weight}`).join('+')}`)
+const JWKS = '{"keys":[{"kid":"k1","kty":"RSA"}]}'
+const jwks = async (url: string) => {
+  assert.equal(url, 'https://cognito-idp.ap-northeast-1.amazonaws.com/ap-northeast-1_pool/.well-known/jwks.json')
+  return JWKS
+}
 const passing = async (): Promise<Check[]> => [{ name: 'ok', ok: true, detail: '' }]
 const failing = async (): Promise<Check[]> => [{ name: 'readyz', ok: false, detail: '500' }]
 
@@ -107,7 +112,7 @@ describe('release', () => {
     params('stg')
     endpoints({ live: [{ revisionId: 'rev-old', weight: 100 }], next: [{ revisionId: 'rev-old', weight: 100 }] })
     const smokes: unknown[] = []
-    const result = await release({ clients, ctx: context('stg', 'tasks'), sha: 'abc1234', smoke: async (base, o) => (smokes.push({ base, ...o }), passing()) })
+    const result = await release({ clients, ctx: context('stg', 'tasks'), sha: 'abc1234', jwks, smoke: async (base, o) => (smokes.push({ base, ...o }), passing()) })
     assert.deepEqual(result, { ok: true, previous: 'rev-old', current: 'rev-new', canary: false })
     assert.deepEqual(updates(), ['next:rev-new=100', 'live:rev-new=100', 'next:rev-old=100'])
     assert.deepEqual(smokes, [{ base: 'https://next.example', sign: { region: 'ap-northeast-1' }, expectBuild: 'abc1234', authMode: 'cognito' }])
@@ -121,6 +126,7 @@ describe('release', () => {
       COGNITO_USER_POOL_ID: 'ap-northeast-1_pool',
       COGNITO_CLIENT_ID: 'client-1',
       COGNITO_ADMIN_GROUP: 'admin',
+      COGNITO_JWKS: JWKS,
       BUILD_SHA: 'abc1234',
     })
     assert.equal(input.serviceConfig!.egressNetworkConnectorArn, revisionConfig.egressNetworkConnectorArn)
@@ -131,7 +137,7 @@ describe('release', () => {
   test('next の確認で失敗したら live に触らず、next を戻し先に向け直して止まる', async () => {
     params('stg')
     const state = endpoints({ live: [{ revisionId: 'rev-old', weight: 100 }], next: [{ revisionId: 'rev-old', weight: 100 }] })
-    await assert.rejects(release({ clients, ctx: context('stg', 'tasks'), sha: 'abc1234', smoke: failing }), /スモークテストに失敗しました: readyz/)
+    await assert.rejects(release({ clients, ctx: context('stg', 'tasks'), sha: 'abc1234', jwks, smoke: failing }), /スモークテストに失敗しました: readyz/)
     assert.deepEqual(updates(), ['next:rev-new=100', 'next:rev-old=100'])
     assert.deepEqual(state.live, [{ revisionId: 'rev-old', weight: 100 }])
   })
@@ -140,7 +146,7 @@ describe('release', () => {
     params('stg')
     endpoints({ live: [{ revisionId: 'rev-old', weight: 100 }], next: [{ revisionId: 'rev-old', weight: 100 }] })
     web.on(GetWebFunctionRevisionCommand).resolves({ state: 'Failed', stateReason: 'code not found' })
-    await assert.rejects(release({ clients, ctx: context('stg', 'tasks'), sha: 'abc1234', smoke: passing }), /Failed: code not found/)
+    await assert.rejects(release({ clients, ctx: context('stg', 'tasks'), sha: 'abc1234', jwks, smoke: passing }), /Failed: code not found/)
     assert.deepEqual(updates(), [])
   })
 
@@ -154,6 +160,7 @@ describe('release', () => {
       ctx: context('prod', 'tasks'),
       sha: 'abc1234',
       smoke: passing,
+      jwks,
       now: () => t,
       wait: async (ms) => {
         waits.push(ms)
@@ -177,7 +184,7 @@ describe('release', () => {
       const state = endpoints({ live: [{ revisionId: 'rev-old', weight: 100 }], next: [{ revisionId: 'rev-old', weight: 100 }] })
       arrange()
       let t = 0
-      await assert.rejects(release({ clients, ctx: context('prod', 'tasks'), sha: 'abc1234', smoke: passing, now: () => t, wait: async (ms) => void (t += ms) }), message)
+      await assert.rejects(release({ clients, ctx: context('prod', 'tasks'), sha: 'abc1234', jwks, smoke: passing, now: () => t, wait: async (ms) => void (t += ms) }), message)
       assert.deepEqual(updates(), ['next:rev-new=100', 'live:rev-old=90+rev-new=10', 'live:rev-old=100', 'next:rev-old=100'])
       assert.deepEqual(state.live, [{ revisionId: 'rev-old', weight: 100 }])
     })
@@ -186,7 +193,7 @@ describe('release', () => {
   test('endpoint の設定が IamAuth でなければ止める（誰でも呼べる endpoint を作らない）', async () => {
     params('stg', { 'api/endpoint-config': JSON.stringify({ authType: 'ApplicationManaged', endpointType: 'HomeRegion', maxEnvironments: 5, canary: false }) })
     endpoints({ live: [{ revisionId: 'rev-old', weight: 100 }], next: [{ revisionId: 'rev-old', weight: 100 }] })
-    await assert.rejects(release({ clients, ctx: context('stg', 'tasks'), sha: 'abc1234', smoke: passing }), /IamAuth/)
+    await assert.rejects(release({ clients, ctx: context('stg', 'tasks'), sha: 'abc1234', jwks, smoke: passing }), /IamAuth/)
     assert.equal(web.commandCalls(CreateWebFunctionRevisionCommand).length, 0)
   })
 })
@@ -298,7 +305,7 @@ describe('bootstrap（環境ごとに 1 回）', () => {
     params('stg')
     endpoints({})
     let smoked = 0
-    const result = await bootstrap({ clients, ctx: context('stg', 'tasks'), sha: 'abc1234', smoke: async () => (smoked++, passing()) })
+    const result = await bootstrap({ clients, ctx: context('stg', 'tasks'), sha: 'abc1234', jwks, smoke: async () => (smoked++, passing()) })
     assert.deepEqual(lambda.commandCalls(InvokeCommand).map((c) => [c.args[0].input.FunctionName, new TextDecoder().decode(c.args[0].input.Payload as Uint8Array)]), [
       ['tasks-stg-db-bootstrap', '{}'],
       ['tasks-stg-migrate', '{"mode":"pre"}'],
@@ -320,7 +327,7 @@ describe('bootstrap（環境ごとに 1 回）', () => {
   test('もう endpoint があれば作らない（何度流しても同じ）', async () => {
     params('stg')
     endpoints({ live: [{ revisionId: 'r', weight: 100 }], next: [{ revisionId: 'r', weight: 100 }] })
-    await bootstrap({ clients, ctx: context('stg', 'tasks'), sha: 'abc1234', smoke: passing })
+    await bootstrap({ clients, ctx: context('stg', 'tasks'), sha: 'abc1234', jwks, smoke: passing })
     assert.equal(web.commandCalls(CreateWebFunctionEndpointCommand).length, 0)
     assert.equal(web.commandCalls(CreateWebFunctionRevisionCommand).length, 0)
     assert.equal(ssm.commandCalls(PutParameterCommand).length, 2)

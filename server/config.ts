@@ -3,7 +3,7 @@
 
 export type AuthConfig =
   | { mode: 'none' }
-  | { mode: 'cognito'; userPoolId: string; clientId: string; adminGroup: string }
+  | { mode: 'cognito'; userPoolId: string; clientId: string; adminGroup: string; /** 署名の鍵（JWKS の JSON）。デプロイの手順が渡す */ jwks?: string }
 
 export type DbConfig =
   /** ローカルとテスト: 接続文字列をそのまま使う */
@@ -75,7 +75,7 @@ export function readAuthConfig(env: Env, appEnv: string): AuthConfig {
   const userPoolId = env.COGNITO_USER_POOL_ID
   const clientId = env.COGNITO_CLIENT_ID
   if (!userPoolId || !clientId) throw new ConfigError('AUTH_MODE=cognito には COGNITO_USER_POOL_ID と COGNITO_CLIENT_ID が要ります')
-  return { mode: 'cognito', userPoolId, clientId, adminGroup: env.COGNITO_ADMIN_GROUP || 'admin' }
+  return { mode: 'cognito', userPoolId, clientId, adminGroup: env.COGNITO_ADMIN_GROUP || 'admin', jwks: env.COGNITO_JWKS || undefined }
 }
 
 export function readConfig(env: Env): ServerConfig {

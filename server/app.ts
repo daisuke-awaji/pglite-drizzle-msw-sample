@@ -1,7 +1,9 @@
 import { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
+import { resolveAccess } from '../src/server/access'
 import { errorResponse, respond, type Route } from '../src/server/http'
 import { routes as apiRoutes } from '../src/server/routes'
+import { accessFor, type Authenticator } from './auth'
 import type { DbProvider } from './db'
 import { describeError, type Logger } from './log'
 
@@ -20,6 +22,8 @@ export type AppOptions = {
   routes?: readonly Route[]
   /** /api/readyz が DB を待つ上限。Aurora の一時停止からの再開（15 秒ほど）より長くする */
   readyTimeoutMs?: number
+  /** ログイン（server/auth.ts）。既定は誰でもよい（ローカルとテスト） */
+  authenticate?: Authenticator
 }
 
 type Env = { Variables: { route: string } }
@@ -27,7 +31,7 @@ type Env = { Variables: { route: string } }
 const withTimeout = <T,>(p: Promise<T>, ms: number) =>
   Promise.race([p, new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`${ms} ms で応答がありません`)), ms).unref())])
 
-export function createApp({ db, log, buildSha, bodyLimitBytes = 1024 * 1024, routes = apiRoutes, readyTimeoutMs = 25_000 }: AppOptions) {
+export function createApp({ db, log, buildSha, bodyLimitBytes = 1024 * 1024, routes = apiRoutes, readyTimeoutMs = 25_000, authenticate = async () => ({ kind: 'all' }) }: AppOptions) {
   const app = new Hono<Env>()
 
   // 1 リクエスト 1 行。ルートは形（/api/projects/:id）で出し、実際の ID やクエリ文字列は出さない
@@ -68,10 +72,15 @@ export function createApp({ db, log, buildSha, bodyLimitBytes = 1024 * 1024, rou
     const path = `${API_PREFIX}${route.path}`
     app.on(route.method, path, (c) => {
       c.set('route', path)
+      // 認証（401）とメンバーへのつなぎ（403）の失敗は、respond が状態コードにする
+      const access = (async () => accessFor(await authenticate(c.req.raw), async (p) => resolveAccess(await db.get(), p)))()
+      // DB の準備に先に失敗して respond が access を待たなかったときに、捕まえられない失敗にしない
+      access.catch(() => {})
       return respond(route, {
         db: db.get(),
         request: c.req.raw,
         params: c.req.param(),
+        access,
         // 利用者には中身を見せず、ログにだけ残す（アラームは request の status で数える）
         onUnexpectedError: (e) => log.error({ type: 'route.error', route: path, ...describeError(e) }),
       })

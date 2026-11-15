@@ -1,20 +1,24 @@
-import { and, asc, eq, isNotNull, ne, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNotNull, ne, sql } from 'drizzle-orm'
 import { members, projects, tasks } from '../db/schema'
 import { TASK_STATUSES } from '../shared/enums'
 import type { Dashboard } from '../shared/types'
+import { ALL, type Access, visibleProjects } from './access'
 import type { Db } from './core'
 
 const count = sql<number>`count(*)`.mapWith(Number)
 
-export async function getDashboard(db: Db, today: string): Promise<Dashboard> {
+// ログインしているときは、自分がメンバーのプロジェクト（とそのタスク）だけを数える。メンバーの数は全体
+export async function getDashboard(db: Db, today: string, access: Access = ALL): Promise<Dashboard> {
+  const visible = visibleProjects(db, access)
+  const visibleTasks = visible ? inArray(tasks.projectId, db.select({ id: projects.id }).from(projects).where(visible)) : undefined
   const [[projectCount], [memberCount], [overdue], statusRows, progress, upcoming] = await Promise.all([
-    db.select({ n: count }).from(projects).where(eq(projects.status, 'active')),
+    db.select({ n: count }).from(projects).where(and(eq(projects.status, 'active'), visible)),
     db.select({ n: count }).from(members),
     db
       .select({ n: count })
       .from(tasks)
-      .where(and(ne(tasks.status, 'done'), sql`${tasks.dueDate} < ${today}`)),
-    db.select({ status: tasks.status, n: count }).from(tasks).groupBy(tasks.status),
+      .where(and(ne(tasks.status, 'done'), sql`${tasks.dueDate} < ${today}`, visibleTasks)),
+    db.select({ status: tasks.status, n: count }).from(tasks).where(visibleTasks).groupBy(tasks.status),
     db
       .select({
         id: projects.id,
@@ -26,7 +30,7 @@ export async function getDashboard(db: Db, today: string): Promise<Dashboard> {
       })
       .from(projects)
       .leftJoin(tasks, eq(tasks.projectId, projects.id))
-      .where(eq(projects.status, 'active'))
+      .where(and(eq(projects.status, 'active'), visible))
       .groupBy(projects.id)
       .orderBy(asc(projects.name)),
     db
@@ -43,7 +47,7 @@ export async function getDashboard(db: Db, today: string): Promise<Dashboard> {
       .from(tasks)
       .innerJoin(projects, eq(projects.id, tasks.projectId))
       .leftJoin(members, eq(members.id, tasks.assigneeId))
-      .where(and(ne(tasks.status, 'done'), isNotNull(tasks.dueDate), eq(projects.status, 'active')))
+      .where(and(ne(tasks.status, 'done'), isNotNull(tasks.dueDate), eq(projects.status, 'active'), visible))
       .orderBy(asc(tasks.dueDate), asc(tasks.id))
       .limit(6),
   ])

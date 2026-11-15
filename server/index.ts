@@ -1,5 +1,6 @@
 import { serve } from '@hono/node-server'
 import { createApp } from './app'
+import { createAuthenticator } from './auth'
 import { readConfig } from './config'
 import { API_SESSION_SETTINGS, createDbProvider } from './db'
 import { consoleLogger, describeError } from './log'
@@ -12,7 +13,7 @@ import { consoleLogger, describeError } from './log'
 const log = consoleLogger
 const config = readConfig(process.env)
 const db = createDbProvider({ ...config.db, applicationName: 'api', sessionSettings: API_SESSION_SETTINGS, log })
-const app = createApp({ db, log, buildSha: config.buildSha, bodyLimitBytes: config.bodyLimitBytes })
+const app = createApp({ db, log, buildSha: config.buildSha, bodyLimitBytes: config.bodyLimitBytes, authenticate: createAuthenticator(config.auth) })
 
 const server = serve({ fetch: app.fetch, hostname: config.listen.hostname, port: config.listen.port }, (info) =>
   log.info({ type: 'listening', address: info.address, port: info.port, build: config.buildSha, appEnv: config.appEnv }),

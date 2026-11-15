@@ -1,3 +1,5 @@
+import { getIdToken, login } from '../auth/session'
+import { USES_AUTH } from '../lib/env'
 import { API_BASE } from '../shared/api-path'
 import type { FieldErrors, ProjectInput, ProjectPatch, TaskPatch } from '../shared/schemas'
 import type {
@@ -68,11 +70,18 @@ async function request<T>(path: string, init?: RequestOptions): Promise<T> {
   for (const [k, v] of Object.entries(init?.search ?? {})) {
     if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v))
   }
+  // ログインするビルドでは、ID トークンを付ける（API が検証する: server/auth.ts）
+  const token = USES_AUTH ? await getIdToken() : undefined
   let res: Response
   try {
     res = await fetch(url, {
       ...init,
-      headers: { accept: 'application/json', 'content-type': 'application/json', ...init?.headers },
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...init?.headers,
+      },
     })
   } catch (e) {
     // 呼び出し側の中断（画面遷移など）はエラーとして扱わず、そのまま投げ直す
@@ -80,6 +89,8 @@ async function request<T>(path: string, init?: RequestOptions): Promise<T> {
     throw new ApiError('network', 0, NETWORK_ERROR_MESSAGE)
   }
   if (!res.ok) {
+    // ログインが切れた（リフレッシュトークンも期限切れ）。ログインし直して、いまの画面に戻る
+    if (res.status === 401 && USES_AUTH) void login()
     const body = (await res.json().catch(() => null)) as ApiErrorBody | null
     throw new ApiError('http', res.status, body?.error || messageForStatus(res.status), body?.fieldErrors)
   }
