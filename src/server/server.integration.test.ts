@@ -15,7 +15,7 @@ beforeEach(async () => {
   db = await createTestDb()
 })
 afterEach(async () => {
-  await db.$client.close()
+  await db.$close()
 })
 
 const projectNamed = async (name: string) => (await listProjects(db)).find((p) => p.name === name)!

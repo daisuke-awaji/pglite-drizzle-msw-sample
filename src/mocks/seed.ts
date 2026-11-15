@@ -159,8 +159,8 @@ const TABLES = [comments, taskTags, tasks, projectMembers, projects, tags, membe
  */
 export async function seedIfEmpty(db: Db, today = new Date()): Promise<boolean> {
   return db.transaction(async (tx) => {
-    const counts = await Promise.all(TABLES.map((t) => tx.$count(t)))
-    if (counts.some((n) => n > 0)) return false
+    // トランザクションは 1 本の接続なので、問い合わせは 1 つずつ送る（node-postgres では同時に送れない）
+    for (const t of TABLES) if ((await tx.$count(t)) > 0) return false
     await insertSampleData(tx, today)
     return true
   })
