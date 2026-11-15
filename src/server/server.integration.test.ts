@@ -1,18 +1,21 @@
 // @vitest-environment node
 import { eq } from 'drizzle-orm'
-import { beforeEach, describe, expect, test } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { comments, members, projectMembers, tasks, taskTags } from '../db/schema'
-import { createTestDb } from '../test/db'
+import { createTestDb, type TestDb } from '../test/db'
 import { getDashboard } from './dashboard'
 import { deleteMember, listMembers } from './members'
 import { listTags } from './tags'
 import { deleteProject, getProject, listProjects, setProjectMembers } from './projects'
 import { addComment, createTask, getTask, listTasks, updateTask } from './tasks'
 
-let db: Awaited<ReturnType<typeof createTestDb>>
+let db: TestDb
 
 beforeEach(async () => {
   db = await createTestDb()
+})
+afterEach(async () => {
+  await db.$client.close()
 })
 
 const projectNamed = async (name: string) => (await listProjects(db)).find((p) => p.name === name)!

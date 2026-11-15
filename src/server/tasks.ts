@@ -8,7 +8,7 @@ import {
   type TaskListQuery,
 } from '../shared/schemas'
 import type { Comment, Page, Tag, TaskDetail, TaskListItem } from '../shared/types'
-import { type Db, HttpError, iso, notFound, parse } from './core'
+import { containsPattern, type Db, HttpError, iso, notFound, parse } from './core'
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
@@ -36,6 +36,8 @@ async function tagsByTask(db: Db | Tx, taskIds: number[]) {
 
 export async function listTasks(db: Db, projectId: number, rawQuery: unknown): Promise<Page<TaskListItem>> {
   const query = taskListQuery.parse(rawQuery)
+  // 存在しないプロジェクトは「0 件」ではなく 404 にする（URL の打ち間違いや削除済みに気づけるように）
+  if ((await db.$count(projects, eq(projects.id, projectId))) === 0) throw notFound('プロジェクト', projectId)
   const where = and(
     eq(tasks.projectId, projectId),
     query.status ? eq(tasks.status, query.status) : undefined,
@@ -47,7 +49,7 @@ export async function listTasks(db: Db, projectId: number, rawQuery: unknown): P
     query.tag
       ? inArray(tasks.id, db.select({ id: taskTags.taskId }).from(taskTags).where(eq(taskTags.tagId, query.tag)))
       : undefined,
-    query.q ? ilike(tasks.title, `%${query.q}%`) : undefined,
+    query.q ? ilike(tasks.title, containsPattern(query.q)) : undefined,
   )
 
   const [{ total } = { total: 0 }] = await db
@@ -120,7 +122,7 @@ export async function getTask(db: Db, id: number): Promise<TaskDetail> {
     createdAt: iso(task.createdAt),
     updatedAt: iso(task.updatedAt),
     assignee: task.assignee,
-    tags: task.taskTags.map((t) => t.tag).sort((a, b) => a.name.localeCompare(b.name)),
+    tags: task.taskTags.map((t) => t.tag).toSorted((a, b) => a.name.localeCompare(b.name)),
     project: {
       id: task.project.id,
       name: task.project.name,

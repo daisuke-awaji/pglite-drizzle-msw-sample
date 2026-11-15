@@ -1,10 +1,22 @@
 import { cleanup } from '@testing-library/react'
-import { afterEach } from 'vitest'
+import { afterEach, beforeEach } from 'vitest'
+import { usePreferences } from '../stores/preferences'
+import { installConsoleGuard } from './console'
 
 declare global {
   var __UI_SDK_STRICT__: boolean | undefined
 }
 globalThis.__UI_SDK_STRICT__ = true
+
+installConsoleGuard()
+
+// 端末の設定・下書きはテストごとに初期状態へ戻す（前のテストの設定が漏れないように）
+const initialPreferences = usePreferences.getState()
+beforeEach(() => {
+  usePreferences.setState(initialPreferences, true)
+  if (typeof localStorage !== 'undefined') localStorage.clear()
+  if (typeof sessionStorage !== 'undefined') sessionStorage.clear()
+})
 
 // jsdom にない API の代わり（UI SDK のテストガイドどおり）
 if (typeof document !== 'undefined') {
@@ -21,6 +33,17 @@ if (typeof document !== 'undefined') {
     unobserve() {}
     disconnect() {}
   }
+  window.matchMedia ??= (query: string) =>
+    ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addEventListener() {},
+      removeEventListener() {},
+      addListener() {},
+      removeListener() {},
+      dispatchEvent: () => false,
+    }) as MediaQueryList
   document.head.append(
     Object.assign(document.createElement('style'), {
       textContent: '[popover] { display: block !important }',

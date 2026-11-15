@@ -60,7 +60,13 @@ export const projectMembersInput = z.object({ memberIds: idList })
 
 const memberFields = {
   name: required('名前', 60),
-  email: z.email('メールアドレスの形式が正しくありません').trim().toLowerCase(),
+  // 前後の空白と大文字小文字の違いで別人にならないよう、整えてから形式を確かめる
+  email: z
+    .string({ error: 'メールアドレスを入力してください' })
+    .trim()
+    .toLowerCase()
+    .max(254, 'メールアドレスが長すぎます')
+    .pipe(z.email('メールアドレスの形式が正しくありません')),
   title: text('役割', 60),
 }
 
@@ -97,13 +103,23 @@ export const commentInput = z.object({
 
 export const tagInput = z.object({ name: required('タグ名', 30) })
 
+// URL のクエリは利用者が手で書き換えられるので、おかしな値はエラーにせず既定値に戻す。
+// 検索語だけは、長すぎても捨てずに先頭 100 文字で探す（捨てると全件が出て「絞り込めていない」ように見える）
+export const SEARCH_MAX = 100
+const searchText = z
+  .string()
+  .trim()
+  .transform((s) => s.slice(0, SEARCH_MAX) || undefined)
+  .optional()
+  .catch(undefined)
+
 export const projectListQuery = z.object({
-  q: z.string().trim().max(100).optional().catch(undefined),
+  q: searchText,
   status: z.enum(PROJECT_STATUSES).optional().catch(undefined),
 })
 
 export const taskListQuery = z.object({
-  q: z.string().trim().max(100).optional().catch(undefined),
+  q: searchText,
   status: z.enum(TASK_STATUSES).optional().catch(undefined),
   assignee: z.union([z.literal('none'), id]).optional().catch(undefined),
   tag: id.optional().catch(undefined),

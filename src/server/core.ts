@@ -35,3 +35,8 @@ export function isUniqueViolation(e: unknown): boolean {
   const err = e as { code?: string; cause?: { code?: string } } | null
   return err?.code === '23505' || err?.cause?.code === '23505'
 }
+
+/** ILIKE で「この文字列を含む」を探すためのパターン。% と _ と \ は文字そのものとして扱う */
+export function containsPattern(text: string): string {
+  return `%${text.replace(/[\\%_]/g, (c) => `\\${c}`)}%`
+}

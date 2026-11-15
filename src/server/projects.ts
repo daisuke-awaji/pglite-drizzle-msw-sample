@@ -2,7 +2,7 @@ import { and, asc, desc, eq, ilike, inArray, notInArray, sql, type SQL } from 'd
 import { members, projectMembers, projects, tasks } from '../db/schema'
 import { projectInput, projectListQuery, projectMembersInput, projectPatch } from '../shared/schemas'
 import type { Member, ProjectDetail, ProjectListItem } from '../shared/types'
-import { type Db, HttpError, iso, notFound, parse } from './core'
+import { containsPattern, type Db, HttpError, iso, notFound, parse } from './core'
 
 // 注意: 1 つの表だけを select するとき、Drizzle は列名を表名なしで出力する（"id" など）。
 // sql`` で相関サブクエリを書くと "id" が内側の表の列と解釈されてしまうので、db.$count を使う
@@ -41,7 +41,7 @@ export async function listProjects(db: Db, rawQuery: unknown = {}): Promise<Proj
   const rows = await selectProjects(
     db,
     and(
-      filter.q ? ilike(projects.name, `%${filter.q}%`) : undefined,
+      filter.q ? ilike(projects.name, containsPattern(filter.q)) : undefined,
       filter.status ? eq(projects.status, filter.status) : undefined,
     ),
   )

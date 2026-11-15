@@ -82,8 +82,8 @@ describe('TransferList', () => {
     render(<Harness onChange={onChange} />)
     const entry = agent.snapshot().find((e) => e.component === 'transfer-list' && !e.offPage)
     expect(entry).toMatchObject({ label: 'メンバーの割り当て', actions: ['assign', 'unassign'] })
-    for (const e of agent.snapshot().filter((e) => !e.offPage && e.component !== 'more')) {
-      expect(e.label, `${e.component} ${e.ref} has no name`).toBeTruthy()
+    for (const item of agent.snapshot().filter((e) => !e.offPage && e.component !== 'more')) {
+      expect(item.label, `${item.component} ${item.ref} has no name`).toBeTruthy()
     }
 
     let result!: Awaited<ReturnType<typeof agent.act>>

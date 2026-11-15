@@ -1,14 +1,105 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
+  "plugins": [
+    "react",
+    "typescript",
+    "oxc",
+    "unicorn",
+    "import",
+    "jsx-a11y",
+    "vitest",
+    "promise"
+  ],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn"
+  },
   "rules": {
     "react/rules-of-hooks": "error",
+    "react/exhaustive-deps": "warn",
     "react/only-export-components": [
       "warn",
       {
         "allowConstantExport": true,
-        "allowExportNames": ["loader", "action", "handle", "indexLoader"]
+        "allowExportNames": [
+          "loader",
+          "action",
+          "handle",
+          "indexLoader"
+        ]
+      }
+    ],
+    "import/no-cycle": "error",
+    "import/no-self-import": "error",
+    "typescript/no-explicit-any": "error",
+    "typescript/consistent-type-imports": [
+      "error",
+      {
+        "fixStyle": "inline-type-imports"
+      }
+    ],
+    "no-console": [
+      "error",
+      {
+        "allow": [
+          "error",
+          "warn"
+        ]
+      }
+    ],
+    "eqeqeq": [
+      "error",
+      "always",
+      {
+        "null": "ignore"
+      }
+    ],
+    "vitest/no-focused-tests": "error",
+    "vitest/no-disabled-tests": "error",
+    "react/react-in-jsx-scope": "off",
+    "vitest/require-mock-type-parameters": "off",
+    "jsx-a11y/prefer-tag-over-role": "off",
+    "no-underscore-dangle": "off",
+    "import/no-unassigned-import": [
+      "warn",
+      {
+        "allow": [
+          "**/*.css",
+          "./agent"
+        ]
+      }
+    ],
+    "vitest/no-standalone-expect": [
+      "error",
+      {
+        "additionalTestBlockFunctions": [
+          "endpoint"
+        ]
+      }
+    ],
+    "vitest/expect-expect": [
+      "error",
+      {
+        "assertFunctionNames": [
+          "expect",
+          "expect*",
+          "assert*",
+          "checkServer"
+        ]
+      }
+    ],
+    "vitest/valid-expect": [
+      "error",
+      {
+        "maxArgs": 2
       }
     ]
-  }
+  },
+  "ignorePatterns": [
+    "dist",
+    "coverage",
+    "playwright-report",
+    "test-results",
+    "public/mockServiceWorker.js"
+  ]
 }

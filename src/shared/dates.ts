@@ -1,6 +1,7 @@
 // 期限などの「日付」は時刻もタイムゾーンも持たない YYYY-MM-DD の文字列で扱う（UI SDK の DatePicker と同じ形）
+const pad = (n: number) => String(n).padStart(2, '0')
+
 export function toDateString(d: Date): string {
-  const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }
 

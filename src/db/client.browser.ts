@@ -23,6 +23,10 @@ async function createDb() {
 }
 
 export function getDb(): Promise<BrowserDb> {
-  dbPromise ??= createDb()
+  // 失敗した Promise を持ち続けると、再読み込みするまで二度と開けないので、失敗したら捨てる
+  dbPromise ??= createDb().catch((e: unknown) => {
+    dbPromise = undefined
+    throw e
+  })
   return dbPromise
 }

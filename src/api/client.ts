@@ -17,29 +17,79 @@ import type {
 } from '../shared/types'
 
 // 画面が使うのはこの fetch だけ。相手が MSW でも本番の API でもコードは変わらない。
+
+/**
+ * - `http`: サーバーが応答した（4xx / 5xx）。`status` と、あれば項目ごとのエラーを持つ
+ * - `network`: サーバーに届かなかった（オフライン、DNS、CORS など）。`status` は 0
+ * - `parse`: 応答は来たが JSON として読めなかった
+ */
+export type ApiErrorKind = 'http' | 'network' | 'parse'
+
 export class ApiError extends Error {
+  override readonly name = 'ApiError'
+  readonly kind: ApiErrorKind
   readonly status: number
   readonly fieldErrors?: FieldErrors
-  constructor(status: number, body: ApiErrorBody | null) {
-    super(body?.error ?? `HTTP ${status}`)
+  /** 時間をおいて同じ操作をやり直せば成功しうるか（通信断・混雑・一時的な障害） */
+  readonly retryable: boolean
+  constructor(kind: ApiErrorKind, status: number, message: string, fieldErrors?: FieldErrors) {
+    super(message)
+    this.kind = kind
     this.status = status
-    this.fieldErrors = body?.fieldErrors
+    this.fieldErrors = fieldErrors
+    this.retryable = kind === 'network' || RETRYABLE_STATUS.has(status)
   }
 }
 
-type Search = Record<string, string | number | undefined | null>
+const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504])
 
-async function request<T>(path: string, init?: Omit<RequestInit, 'signal'> & { search?: Search; signal?: AbortSignal }) {
+// サーバーが本文を返さなかったときの文言。利用者が次に何をすればよいかが分かるように書く
+export function messageForStatus(status: number): string {
+  if (status === 400) return '入力内容を確認してください'
+  if (status === 401) return 'ログインが必要です'
+  if (status === 403) return 'この操作を行う権限がありません'
+  if (status === 404) return '見つかりませんでした。削除された可能性があります'
+  if (status === 409) return 'ほかの変更と競合しました。画面を読み込み直してください'
+  if (status === 413) return 'データが大きすぎます'
+  if (status === 429) return 'リクエストが多すぎます。しばらく待ってからやり直してください'
+  if (status >= 500) return 'サーバーで問題が起きました。しばらく待ってからやり直してください'
+  return `通信に失敗しました（HTTP ${status}）`
+}
+
+export const NETWORK_ERROR_MESSAGE = 'サーバーに接続できません。通信環境を確認してからやり直してください'
+
+export const isAbortError = (e: unknown) => e instanceof DOMException && e.name === 'AbortError'
+
+type Search = Record<string, string | number | undefined | null>
+type RequestOptions = Omit<RequestInit, 'signal'> & { search?: Search; signal?: AbortSignal }
+
+async function request<T>(path: string, init?: RequestOptions): Promise<T> {
   const url = new URL(`${API_BASE}${path}`, location.origin)
   for (const [k, v] of Object.entries(init?.search ?? {})) {
     if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v))
   }
-  const res = await fetch(url, {
-    ...init,
-    headers: { 'content-type': 'application/json', ...init?.headers },
-  })
-  if (!res.ok) throw new ApiError(res.status, (await res.json().catch(() => null)) as ApiErrorBody | null)
-  return (res.status === 204 ? undefined : await res.json()) as T
+  let res: Response
+  try {
+    res = await fetch(url, {
+      ...init,
+      headers: { accept: 'application/json', 'content-type': 'application/json', ...init?.headers },
+    })
+  } catch (e) {
+    // 呼び出し側の中断（画面遷移など）はエラーとして扱わず、そのまま投げ直す
+    if (isAbortError(e) || init?.signal?.aborted) throw e
+    throw new ApiError('network', 0, NETWORK_ERROR_MESSAGE)
+  }
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as ApiErrorBody | null
+    throw new ApiError('http', res.status, body?.error || messageForStatus(res.status), body?.fieldErrors)
+  }
+  if (res.status === 204) return undefined as T
+  try {
+    return (await res.json()) as T
+  } catch (e) {
+    if (isAbortError(e)) throw e
+    throw new ApiError('parse', res.status, 'サーバーの応答を読み取れませんでした')
+  }
 }
 
 const json = (method: string, body: unknown) => ({ method, body: JSON.stringify(body) })
