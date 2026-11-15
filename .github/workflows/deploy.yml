@@ -1,0 +1,94 @@
+name: Deploy
+
+# AWS へのデプロイ（docs/production.md「いつものリリース」）。
+# - main の CI が通ったら stg へ自動で、GitHub Environments の production の承認のあと prod へ、同じ手順で入れる
+# - 手で流すとき（dev や、やり直し）は workflow_dispatch で環境と SHA を選ぶ
+# AWS の準備（docs/production.md「初回の構築」）が済むまでは、リポジトリの変数 AWS_DEPLOY_ENABLED を true にしない（何もしない）
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'デプロイ先'
+        type: choice
+        options: [dev, stg, prod]
+        required: true
+      sha:
+        description: 'コミット SHA（空なら選んだブランチの最新）'
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+# 同じ環境へのデプロイは順番に流す（途中で止めない。マイグレーションの途中で切らない）
+concurrency:
+  group: deploy-${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'pipeline' }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    if: vars.AWS_DEPLOY_ENABLED == 'true' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - id: sha
+        env:
+          INPUT_SHA: ${{ inputs.sha }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          sha="${INPUT_SHA:-${RUN_SHA:-$GITHUB_SHA}}"
+          [[ "$sha" =~ ^[0-9a-f]{7,40}$ ]] || { echo "SHA が正しくありません: $sha"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  # サーバーの zip は 1 回だけ作り、すべての環境に同じものを置く（stg で確かめたものを prod に出す）
+  build:
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run build:server
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-server
+          path: dist-server/
+          retention-days: 30
+
+  dev:
+    needs: [gate, build]
+    if: github.event_name == 'workflow_dispatch' && inputs.environment == 'dev'
+    uses: ./.github/workflows/deploy-env.yml
+    with:
+      environment: dev
+      github-environment: development
+      sha: ${{ needs.gate.outputs.sha }}
+
+  stg:
+    needs: [gate, build]
+    if: github.event_name == 'workflow_run' || inputs.environment == 'stg'
+    uses: ./.github/workflows/deploy-env.yml
+    with:
+      environment: stg
+      github-environment: staging
+      sha: ${{ needs.gate.outputs.sha }}
+
+  prod:
+    needs: [gate, build, stg]
+    # main からの流れでは stg が通ったときだけ。手で prod を選んだときは stg を飛ばす（同じ SHA を stg で確かめてあること）
+    if: always() && needs.build.result == 'success' && ((github.event_name == 'workflow_run' && needs.stg.result == 'success') || inputs.environment == 'prod')
+    uses: ./.github/workflows/deploy-env.yml
+    with:
+      environment: prod
+      github-environment: production
+      sha: ${{ needs.gate.outputs.sha }}
