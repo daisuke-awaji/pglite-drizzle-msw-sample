@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { runMigrations } from './migrate'
+import { runMigrations, verifyDatabase } from './migrate'
 import { LOCK_ID, type RunOptions } from './migrations'
 import { runPreSql } from './pre-sql'
 import { adminQuery, connect, freshDatabase, migrationsWith } from './testing/pg'
@@ -138,5 +138,18 @@ describe('事前の SQL（CREATE INDEX CONCURRENTLY）', () => {
     const result = await runPreSql(options({ migrationsFolder: folder(withIndex) }))
     expect(result.ran[0]!.droppedInvalid).toEqual(['tasks_due_date_idx'])
     expect(await indexState()).toEqual([{ valid: true }])
+  })
+})
+
+describe('復元したクラスターの確かめ（verify）', () => {
+  test('未適用のマイグレーションと主な表の行数を返し、書き込まない', async () => {
+    await runMigrations(options())
+    await adminQuery(`INSERT INTO projects (name) VALUES ('p1'), ('p2')`, [], db.name)
+    const result = await verifyDatabase(() => connect(db.url), './drizzle')
+    expect(result).toMatchObject({ ok: true, pending: [], counts: { members: 0, projects: 2, tasks: 0, comments: 0 } })
+  })
+
+  test('マイグレーションを流していない DB では失敗にする（表がない。復元に失敗している）', async () => {
+    await expect(verifyDatabase(() => connect(db.url), './drizzle')).rejects.toThrow(/relation "members" does not exist/)
   })
 })

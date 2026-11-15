@@ -30,8 +30,8 @@ export async function runMigrations(options: RunOptions): Promise<MigrateResult>
 
 type Env = Readonly<Record<string, string | undefined>>
 
-/** migrator の接続。MIGRATOR_DATABASE_URL（ローカル）か MIGRATOR_SECRET_ARN（AWS）から作る */
-export function migratorConnector(env: Env): () => Promise<Client> {
+/** migrator の接続。MIGRATOR_DATABASE_URL（ローカル）か MIGRATOR_SECRET_ARN（AWS）から作る。host を渡すと、そのクラスターにつなぐ（復元の練習） */
+export function migratorConnector(env: Env, { host }: { host?: string } = {}): () => Promise<Client> {
   const ssl = (env.DB_SSL ?? (env.MIGRATOR_DATABASE_URL ? 'disable' : 'verify-full')) as SslMode
   const common = { application_name: 'migrate', connectionTimeoutMillis: 30_000, ssl: sslOptions(ssl) }
   if (env.MIGRATOR_DATABASE_URL) {
@@ -46,7 +46,7 @@ export function migratorConnector(env: Env): () => Promise<Client> {
   const secret = cachedSecret(env.MIGRATOR_SECRET_ARN, { ttlMs: 0 })
   return async () => {
     const s = await secret.get()
-    const client = new Client({ ...common, host: s.host, port: s.port, user: s.username, password: s.password, database: s.dbname })
+    const client = new Client({ ...common, host: host ?? s.host, port: s.port, user: s.username, password: s.password, database: s.dbname })
     await client.connect()
     return client
   }
@@ -55,12 +55,38 @@ export function migratorConnector(env: Env): () => Promise<Client> {
 /** zip の中の drizzle/（バンドルと同じフォルダー）。MIGRATIONS_FOLDER で差し替えられる */
 export const defaultMigrationsFolder = (env: Env) => env.MIGRATIONS_FOLDER ?? fileURLToPath(new URL('./drizzle', import.meta.url))
 
-export type MigrateEvent = { mode?: 'migrate' | 'pre' | 'status' }
+export type MigrateEvent = {
+  mode?: 'migrate' | 'pre' | 'status' | 'verify'
+  /** verify だけ: 確かめるクラスターの endpoint（復元の練習で作ったクラスター。infra/scripts/ops/restore-drill.ts） */
+  host?: string
+}
+
+/** 復元したクラスターが使えるか（読むだけ）: 未適用のマイグレーションと、主な表の行数 */
+export async function verifyDatabase(connect: () => Promise<Client>, migrationsFolder: string) {
+  const client = await connect()
+  try {
+    await client.query('SET default_transaction_read_only = on')
+    const pending = await pendingTags(client, readJournal(migrationsFolder))
+    const counts: Record<string, number> = {}
+    for (const table of ['members', 'projects', 'tasks', 'comments']) {
+      const { rows } = await client.query<{ n: number }>(`SELECT count(*)::int AS n FROM ${client.escapeIdentifier(table)}`)
+      counts[table] = rows[0]!.n
+    }
+    const { rows } = await client.query<{ latest: string | null }>('SELECT max(updated_at)::text AS latest FROM tasks')
+    return { ok: true as const, pending, counts, latestTaskUpdate: rows[0]?.latest ?? null }
+  } finally {
+    await client.end()
+  }
+}
 type LambdaContext = { getRemainingTimeInMillis(): number }
 
 const log = (fields: Record<string, unknown>) => consoleLogger.info({ type: 'migrate', ...fields })
 
-export async function runMode(mode: MigrateEvent['mode'], env: Env, deadline: number) {
+export async function runMode(mode: MigrateEvent['mode'], env: Env, deadline: number, event: MigrateEvent = {}) {
+  if (mode === 'verify') {
+    if (!event.host) throw new Error('verify には host（確かめるクラスターの endpoint）が要ります')
+    return verifyDatabase(migratorConnector(env, { host: event.host }), defaultMigrationsFolder(env))
+  }
   const options: RunOptions = {
     connect: migratorConnector(env),
     migrationsFolder: defaultMigrationsFolder(env),
@@ -85,7 +111,7 @@ export async function runMode(mode: MigrateEvent['mode'], env: Env, deadline: nu
 
 /** Lambda 関数のハンドラー。失敗は例外にして返す（呼び出し側は FunctionError で分かる） */
 export const handler = async (event: MigrateEvent = {}, context?: LambdaContext) =>
-  runMode(event.mode ?? 'migrate', process.env, Date.now() + (context?.getRemainingTimeInMillis() ?? 15 * 60_000))
+  runMode(event.mode ?? 'migrate', process.env, Date.now() + (context?.getRemainingTimeInMillis() ?? 15 * 60_000), event)
 
 // CLI: node migrate/index.mjs [migrate|pre|status]（ローカルと、15 分を超えるときの Fargate の RunTask）
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
